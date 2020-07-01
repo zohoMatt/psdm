@@ -4,10 +4,14 @@
   "description": "Pore Surface Diffusion Model for Water Treatment.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "watch": {
+    "lint": "src/**/*.ts"
+  },
   "scripts": {
     "lint": "tslint -c tslint.json 'src/**/*.ts' --fix",
     "build": "npm run lint && tsc",
-    "prepublish": "rm -rf dist && npm run build"
+    "prepublish": "rm -rf dist && npm run build",
+    "watch": "npm-watch"
   },
   "repository": "https://github.com/zohoMatt/psdm.git",
   "author": "zohoMatt <mattzuo12@gmail.com>",
@@ -17,5 +21,8 @@
     "global": "^4.4.0",
     "numjs": "^0.16.0",
     "typescript": "^3.9.6"
+  },
+  "devDependencies": {
+    "npm-watch": "^0.6.0"
   }
 }
