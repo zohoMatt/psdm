@@ -12,7 +12,8 @@
     "strict": true,
     "inlineSourceMap": true,
     "inlineSources": true,
-    "experimentalDecorators": true
+    "experimentalDecorators": true,
+    "declaration": true
   },
   "include": [
     "./src"
