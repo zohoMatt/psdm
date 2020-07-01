@@ -1,0 +1,16 @@
+{
+    "defaultSeverity": "error",
+    "extends": [
+        "tslint:recommended"
+    ],
+    "linterOptions": {
+        "formatter": "verbose"
+    },
+    "jsRules": {},
+    "rules": {
+        "no-console": {
+            "severity": "warning"
+        }
+    },
+    "rulesDirectory": []
+}

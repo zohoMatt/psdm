@@ -1,0 +1,20 @@
+{
+  "compilerOptions": {
+    "target": "es5",
+    "module": "commonjs",
+    "lib": [
+      "dom",
+      "es2015",
+      "es2016",
+      "es2017"
+    ],
+    "outDir": "./dist",
+    "strict": true,
+    "inlineSourceMap": true,
+    "inlineSources": true,
+    "experimentalDecorators": true
+  },
+  "include": [
+    "./src"
+  ]
+}
