@@ -8,6 +8,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `scripts/benchmark.py` and `benchmarks/report.html`: timing and accuracy benchmark against
+  the original EPA PSDM code (11 cases, fresh process per run).
 - `psdm.estimate_capacity`: Freundlich `K` from breakthrough data for an assumed `1/n`
   (upstream `__calculate_capacity`), with breakthrough detection and logistic/linear
   extrapolation. Validated against the EPA code.
