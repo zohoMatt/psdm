@@ -5,7 +5,7 @@ from .isotherms import IsothermFit, fit_isotherm
 from .model import Column, Compound
 from .solver import Result, simulate
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 __all__ = [
     "Column",

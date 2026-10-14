@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-14
+
 ### Added
 
 - `psdm.simulate`: multi-component PSDM with NOM fouling, rewritten from the US EPA code.
@@ -19,3 +21,6 @@ All notable changes to this project are documented here. The format follows
 - Capacity estimation from breakthrough data without `K` (`__calculate_capacity`).
 - Lead–lag configurations, the equilibrium column model (ECM), full-scale prediction tools,
   model uncertainty bands and surface-diffusivity fitting.
+
+[Unreleased]: https://github.com/zohoMatt/psdm/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/zohoMatt/psdm/releases/tag/v0.1.0
