@@ -76,6 +76,15 @@ fit.params, fit.stderr, fit.r2
 | `column.run_psdm_kfit(comp)` with a single `test_range`/`xn_range` | {func}`psdm.simulate` + {func}`psdm.sum_of_squares` |
 | `run_all`, `run_all_smart` | {func}`psdm.fit_freundlich` |
 | `PSDM_tools.isotherm_fit` | {func}`psdm.fit_isotherm` |
+| `PSDM(...)` without `k_data` (`__calculate_capacity`) | {func}`psdm.estimate_capacity` |
+| `column.model_uncertainty(...)` | {func}`psdm.model_uncertainty` |
+| `column.run_psdm_dsfit(comp)`, `analyze_all_ds` | {func}`psdm.fit_surface_diffusivity` |
+| `PSDM_extra.calc_mesh_diameter` | {func}`psdm.fullscale.mesh_diameter` |
+| `PSDM_extra.build_large_scale_column` | {func}`psdm.fullscale.build_large_scale_column` |
+| `PSDM_extra.calc_RSSCT_specs` | {func}`psdm.fullscale.rssct_design` |
+| `PSDM_tools.specific_throughput` | {func}`psdm.fullscale.specific_throughput` |
+| `PSDM_tools.calculate_replacement_interval` | {func}`psdm.fullscale.replacement_interval` |
+| `PSDM_tools.predict_full_scale` | {func}`psdm.simulate` + {func}`psdm.fullscale.staggered_bed_interval` |
 | `chem_type=` (for all compounds) | `Compound(fouling_class=...)` per compound |
 | `water_type=` | `water=` |
 | `mass_transfer={comp: {...}}` | `Compound(kf=..., dp=..., ds=...)` |

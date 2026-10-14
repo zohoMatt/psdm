@@ -75,7 +75,7 @@ select = ["E", "F", "W", "I", "UP", "B", "NPY", "PD002", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/data/reference/generate.py" = ["E402", "E501", "B", "UP", "RUF"]
+"tests/data/reference/generate*.py" = ["E402", "E501", "B", "UP", "RUF"]
 
 [tool.coverage.run]
 source = ["psdm"]

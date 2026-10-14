@@ -25,6 +25,38 @@
 .. autofunction:: psdm.sum_of_squares
 ```
 
+## Capacity, uncertainty and diffusivity
+
+```{eval-rst}
+.. autofunction:: psdm.estimate_capacity
+
+.. autoclass:: psdm.CapacityEstimate
+   :members: k_for
+
+.. autodata:: psdm.capacity.METHODS
+   :no-value:
+
+.. autofunction:: psdm.capacity.logistic
+
+.. autofunction:: psdm.model_uncertainty
+
+.. autoclass:: psdm.Uncertainty
+
+.. autodata:: psdm.uncertainty.PARAMETERS
+   :no-value:
+
+.. autofunction:: psdm.fit_surface_diffusivity
+
+.. autoclass:: psdm.DsFitResult
+```
+
+## Full-scale design
+
+```{eval-rst}
+.. automodule:: psdm.fullscale
+   :members:
+```
+
 ## Isotherms
 
 ```{eval-rst}
