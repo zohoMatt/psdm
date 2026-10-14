@@ -1,4 +1,4 @@
-"""Fitting Freundlich parameters to column breakthrough data."""
+"""Fitting model parameters to column breakthrough data."""
 
 from __future__ import annotations
 
@@ -6,8 +6,9 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 
+from .fouling import ORGANIC_FREE
 from .model import Column, Compound
 from .solver import Result, simulate
 from .units import factor
@@ -127,3 +128,113 @@ def fit_freundlich(
     if res is None:
         raise RuntimeError("simulation failed at the best-fit parameters")
     return FitResult(best, ssq, res, pd.DataFrame(rows, columns=["k", "n_inv", "ssq"]))
+
+
+@dataclass
+class DsFitResult:
+    """Output of :func:`fit_surface_diffusivity`.
+
+    Attributes
+    ----------
+    compound
+        The compound with the fitted ``ds``.
+    ds
+        Fitted surface diffusivity, cm²/s.
+    ds_ref
+        Reference surface diffusivity the search factors multiply, cm²/s.
+    ssq
+        Sum of squared residuals at the optimum.
+    result
+        Simulation at the optimum.
+    evaluations
+        Sum of squares for every evaluated ``ds`` (index).
+    """
+
+    compound: Compound
+    ds: float
+    ds_ref: float
+    ssq: float
+    result: Result
+    evaluations: pd.Series
+
+
+def fit_surface_diffusivity(
+    column: Column,
+    compound: Compound,
+    influent: pd.Series | pd.DataFrame,
+    effluent: pd.Series,
+    *,
+    factors=None,
+    ds_ref: float | None = None,
+    refine: bool = True,
+    until: float | None = None,
+    **simulate_kw,
+) -> DsFitResult:
+    """Fit the surface diffusivity ``ds`` of one compound to observed breakthrough.
+
+    ``ds = factor · ds_ref`` is evaluated for every factor in ``factors`` and, with
+    ``refine``, the best grid point is refined by a bounded scalar search in ``log ds``
+    between its neighbours. ``K``, ``1/n``, ``kf`` and ``dp`` are those of ``compound``.
+    This is ``PSDM.run_psdm_dsfit`` of the US EPA code, which uses the same default grid.
+
+    Surface diffusion is switched off in fouled water, so ``water`` must be
+    ``"Organic Free"``.
+
+    Parameters
+    ----------
+    column, compound, influent
+        As for :func:`psdm.simulate`.
+    effluent
+        Observed effluent for ``compound``, indexed by time.
+    factors
+        Multipliers of ``ds_ref`` to try; default ``numpy.linspace(1e-10, 1, 30)``.
+    ds_ref
+        Reference ``ds`` (cm²/s); default is the value from the pore-to-surface diffusion
+        flux ratio ``column.psdfr`` that :func:`psdm.simulate` would use.
+    refine
+        Refine the best grid point with :func:`scipy.optimize.minimize_scalar`.
+    until
+        Only fit observations at or before this time.
+    **simulate_kw
+        Forwarded to :func:`psdm.simulate`.
+    """
+    if simulate_kw.get("water", ORGANIC_FREE) != ORGANIC_FREE:
+        raise ValueError("surface diffusion is switched off in fouled water; nothing to fit")
+    infl = influent[compound.name] if isinstance(influent, pd.DataFrame) else influent
+    infl = infl.to_frame(compound.name)
+    if ds_ref is None:
+        base = simulate(column, compound.with_(ds=None), infl, **simulate_kw)
+        ds_ref = float(base.mass_transfer.loc["ds", compound.name])
+    factors = np.linspace(1e-10, 1.0, 30) if factors is None else np.asarray(factors, float)
+    if len(factors) == 0 or not (factors > 0).all():
+        raise ValueError("factors must be positive")
+    factors = np.unique(factors)
+    evaluated: dict[float, tuple[float, Result | None]] = {}
+
+    def trial(ds: float) -> float:
+        if ds not in evaluated:
+            try:
+                res = simulate(column, compound.with_(ds=ds), infl, **simulate_kw)
+                evaluated[ds] = (sum_of_squares(res, effluent, compound.name, until), res)
+            except (RuntimeError, ValueError, FloatingPointError):
+                evaluated[ds] = (_FAILED, None)
+        return evaluated[ds][0]
+
+    grid = factors * ds_ref
+    ssqs = np.array([trial(float(ds)) for ds in grid])
+    i = int(np.argmin(ssqs))
+    if refine and len(grid) > 1:
+        lo, hi = grid[max(i - 1, 0)], grid[min(i + 1, len(grid) - 1)]
+        minimize_scalar(
+            lambda x: trial(float(np.exp(x))),
+            bounds=(np.log(lo), np.log(hi)),
+            method="bounded",
+            options={"xatol": 1e-3},
+        )
+    best = min(evaluated, key=lambda ds: evaluated[ds][0])
+    ssq, res = evaluated[best]
+    if res is None:
+        raise RuntimeError("simulation failed at the best-fit parameters")
+    evaluations = pd.Series({ds: v[0] for ds, v in sorted(evaluated.items())}, name="ssq")
+    evaluations.index.name = "ds"
+    return DsFitResult(compound.with_(ds=best), best, ds_ref, ssq, res, evaluations)
