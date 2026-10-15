@@ -9,6 +9,10 @@ usage (from the repository root)::
 https://github.com/USEPA/Water_Treatment_Models at commit 3f514c2. Without it the
 repository is cloned into a temporary directory (requires ``git``).
 
+The upstream code is run twice for the single-compound cases: with inputs built as in upstream's
+``test_PSDM.py`` (object-dtype frames, which make upstream's right-hand side run Python-object
+matmuls) and, as a control group, with the same inputs converted to float64.
+
 Every timed run happens in a fresh worker process (``python -I``) started with the same
 interpreter, so both implementations use identical numpy/scipy/pandas builds. Inside each
 worker the case is run twice: the first ("cold") call includes one-off costs such as lazy
@@ -135,7 +139,7 @@ def _timed(func):
     return out, time.perf_counter() - t0
 
 
-def worker_upstream(case, upstream):
+def worker_upstream(case, upstream, float_inputs=False):
     import types
 
     import numpy as np
@@ -161,7 +165,9 @@ def worker_upstream(case, upstream):
             return pd.read_excel(DATA / "addesigns_test.xlsx", sheet_name="data", index_col=[0])
 
         def build(inp):
-            # identical to tests/data/reference/generate.py
+            # identical to tests/data/reference/generate.py, which follows upstream test_PSDM.py:
+            # the `data` sheet mixes numbers with the string influentID, so the transposed frames
+            # are dtype object. float_inputs=True is the control group with float64 inputs.
             column_prop = inp.T[
                 ["epor", "diam", "L", "wt", "rhop", "rhof", "flrt", "rad", "influentID"]
             ].T
@@ -172,6 +178,9 @@ def worker_upstream(case, upstream):
             kd.loc["q"] = 1
             kd.loc["brk"] = 100
             kd.columns = pd.MultiIndex.from_tuples([("Test", "Test")])
+            if float_inputs:
+                chem, kd = chem.astype(float), kd.astype(float)
+                column_prop = column_prop.map(lambda v: v if isinstance(v, str) else float(v))
             idx = pd.MultiIndex.from_tuples([("concentration", "Test", "Test")])
             infl = pd.DataFrame(d["c0"] * 1e6, index=np.arange(175), columns=idx)["concentration"]
             return P.PSDM(
@@ -407,23 +416,27 @@ def run_worker(impl, case, upstream, out_file):
     return json.loads(Path(out_file).read_text())
 
 
+def impls(case):
+    """Implementations run for a case: the float64-input control group only applies where
+    the upstream inputs are built as object-dtype frames (single-compound cases)."""
+    return ["upstream", "psdm"] + (["upstream_f64"] if CASES[case][0] == "single" else [])
+
+
 def benchmark(upstream: Path, repeats: int, cases: list[str]):
-    raw = {c: {"upstream": [], "psdm": []} for c in cases}
+    raw = {c: {i: [] for i in impls(c)} for c in cases}
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "w.json"
         for r in range(repeats):
             for case in cases:
-                order = (
-                    ("upstream", "psdm")
-                    if (r + cases.index(case)) % 2 == 0
-                    else ("psdm", "upstream")
-                )
+                order = impls(case)
+                k = (r + cases.index(case)) % len(order)
+                order = order[k:] + order[:k]
                 for impl in order:
                     res = run_worker(impl, case, upstream, out)
                     raw[case][impl].append(res)
                     it = res["iterations"]
                     print(
-                        f"[{r + 1}/{repeats}] {case:14s} {impl:8s} cold {it[0]['build_s'] + it[0]['run_s']:6.3f}s"
+                        f"[{r + 1}/{repeats}] {case:14s} {impl:12s} cold {it[0]['build_s'] + it[0]['run_s']:6.3f}s"
                         f"  warm {it[1]['build_s'] + it[1]['run_s']:6.3f}s",
                         flush=True,
                     )
@@ -501,6 +514,13 @@ def summarise(raw):
             e = curves["compounds"]["TCE"]
             s["accuracy"]["upstream_vs_addesigns"] = e["upstream_vs_addesigns"]
             s["accuracy"]["psdm_vs_addesigns"] = e["psdm_vs_addesigns"]
+        if "upstream_f64" in runs:
+            f64 = runs["upstream_f64"][0]
+            for key, a, b in (("f64_vs_upstream", f64, up), ("psdm_vs_f64", ps, f64)):
+                diff = np.interp(grid, a["grid"], a["curves"]["TCE"]) - np.asarray(
+                    b["curves"]["TCE"]
+                )
+                s["accuracy"][key] = {"max": float(np.abs(diff).max()) / d["c0"]}
         s["curves"] = curves
         summary[case] = s
     return summary
@@ -671,17 +691,34 @@ def pct(x, digits=2):
 def render(summary, env, repeats):
     cases = list(summary)
     rows, detail, solver = [], [], []
-    speed_warm, speed_cold, worst_up, worst_ad = [], [], 0.0, 0.0
+    worst_up, worst_ad = 0.0, 0.0
     by_kind = {}
+    f64_cut = []  # (upstream as-is, upstream float64, psdm) warm build + run, single cases
+    rhs_ratio = []
     for c in cases:
         s = summary[c]
         tu, tp = s["timing"]["upstream"], s["timing"]["psdm"]
-        sw = med(tu["warm_total_s"]) / med(tp["warm_total_s"])
-        sc = med(tu["cold_total_s"]) / med(tp["cold_total_s"])
-        speed_warm.append(sw)
-        speed_cold.append(sc)
-        si = med(tu["warm_integrate_s"]) / med(tp["warm_integrate_s"])
+        tf = s["timing"].get("upstream_f64")
+        base = tf or tu  # fair baseline: upstream with float64 inputs where that differs
+
+        def outside(t):
+            return med(t["warm_build_s"]) + med(t["warm_run_s"]) - med(t["warm_integrate_s"])
+
+        sw = med(base["warm_total_s"]) / med(tp["warm_total_s"])
+        sc = med(base["cold_total_s"]) / med(tp["cold_total_s"])
+        si = med(base["warm_integrate_s"]) / med(tp["warm_integrate_s"])
+        so = outside(base) / max(1e-9, outside(tp))
         by_kind.setdefault(s["kind"], []).append((sw, si))
+        sb = s["solver"]["upstream_f64" if tf else "upstream"]
+        sp = s["solver"]["psdm"]
+        rhs_ratio.append(
+            (med(base["warm_integrate_s"]) / sb["nfev"])
+            / (med(tp["warm_integrate_s"]) / sp["nfev"])
+        )
+        if tf:
+            f64_cut.append(
+                (med(tu["warm_total_s"]), med(tf["warm_total_s"]), med(tp["warm_total_s"]))
+            )
         acc = s["accuracy"]
         worst_up = max(worst_up, acc["vs_upstream"]["max"])
         if "psdm_vs_addesigns" in acc:
@@ -692,13 +729,23 @@ def render(summary, env, repeats):
             )
         else:
             ad_cell = "<small>no AdDesignS output</small>"
+        if tf:
+            sa = med(tu["warm_total_s"]) / med(tp["warm_total_s"])
+            f64_cell = fmt_s(tf["warm_total_s"])
+            asis_cell = f"{sa:.2f}×"
+        else:
+            f64_cell = "<small>inputs already float64</small>"
+            asis_cell = "<small>same</small>"
         rows.append(
             f"<tr><td>{html.escape(s['label'])}</td><td>{fmt_s(tu['warm_total_s'])}</td>"
-            f"<td>{fmt_s(tp['warm_total_s'])}</td><td><b>{sw:.2f}×</b><br><small>cold {sc:.2f}×</small></td>"
+            f"<td>{f64_cell}</td><td>{fmt_s(tp['warm_total_s'])}</td>"
+            f"<td><b>{sw:.2f}×</b><br><small>cold {sc:.2f}×</small></td><td>{asis_cell}</td>"
+            f"<td>{si:.2f}×</td><td>{so:.1f}×</td>"
             f"<td>{pct(acc['vs_upstream']['max'])}<br><small>RMS {pct(acc['vs_upstream']['rms'], 3)}</small></td>"
             f"<td>{ad_cell}</td></tr>"
         )
-        for impl, t in (("upstream", tu), ("psdm", tp)):
+        impl_rows = [("upstream", tu)] + ([("upstream, float64", tf)] if tf else [])
+        for impl, t in [*impl_rows, ("psdm", tp)]:
             detail.append(
                 f"<tr><td>{html.escape(s['label'])}</td><td>{impl}</td>"
                 f"<td>{med(t['cold_read_s']):.3f}</td><td>{med(t['warm_build_s']):.3f}</td>"
@@ -707,15 +754,29 @@ def render(summary, env, repeats):
                 f"<td>{med(t['cold_build_s']) + med(t['cold_run_s']):.3f}</td>"
                 f"<td>{med(t['import_s']):.2f}</td></tr>"
             )
-        su, sp = s["solver"]["upstream"], s["solver"]["psdm"]
-        solver.append(
-            f"<tr><td>{html.escape(s['label'])}</td>"
-            + "".join(
-                f"<td>{su[k]}</td><td>{sp[k]}</td>" for k in ("nsteps", "nfev", "njev", "nlu")
-            )
-            + f"<td>{med(tu['warm_integrate_s']) / su['nfev'] * 1e3:.3f}</td>"
-            f"<td>{med(tp['warm_integrate_s']) / sp['nfev'] * 1e3:.3f}</td></tr>"
+        su = s["solver"]["upstream"]
+        cnt = "".join(
+            f"<td>{su[k]}</td><td>{sb[k] if tf else '–'}</td><td>{sp[k]}</td>"
+            for k in ("nsteps", "nfev", "njev", "nlu")
         )
+        ms = [
+            med(tu["warm_integrate_s"]) / su["nfev"] * 1e3,
+            med(tf["warm_integrate_s"]) / sb["nfev"] * 1e3 if tf else None,
+            med(tp["warm_integrate_s"]) / sp["nfev"] * 1e3,
+        ]
+        solver.append(
+            f"<tr><td>{html.escape(s['label'])}</td>{cnt}"
+            + "".join(f"<td>{v:.3f}</td>" if v is not None else "<td>–</td>" for v in ms)
+            + "</tr>"
+        )
+
+    # largest relative difference in step and RHS-evaluation counts between implementations
+    max_count_dev = 0.0
+    for s in summary.values():
+        sp = s["solver"]["psdm"]
+        for su in s["solver"].values():
+            for k in ("nsteps", "nfev"):
+                max_count_dev = max(max_count_dev, abs(su[k] - sp[k]) / sp[k])
 
     gm = statistics.geometric_mean
     charts = []
@@ -767,7 +828,8 @@ def render(summary, env, repeats):
     env_rows = "".join(
         f"<b>{html.escape(k)}</b><span>{html.escape(str(v))}</span>" for k, v in env.items()
     )
-    faster = gm(speed_warm)
+    all_fair = [a for v in by_kind.values() for a, _ in v]
+    all_int = [b for v in by_kind.values() for _, b in v]
     kinds = {
         "single": "single compound, constant influent",
         "multi": "multi-component",
@@ -775,14 +837,31 @@ def render(summary, env, repeats):
     }
 
     def rng(v):
-        return f"{min(v):.2f}×" if max(v) - min(v) < 0.005 else f"{min(v):.2f}–{max(v):.2f}×"
+        lo, hi = f"{min(v):.2f}", f"{max(v):.2f}"
+        return f"{lo}×" if lo == hi else f"{lo}–{hi}×"
 
     verdict = "".join(
-        f"<li><b>{kinds[k]}</b> ({len(v)} cases): build + run {rng([a for a, _ in v])} faster, "
-        f"time inside <code>solve_ivp</code> {rng([b for _, b in v])}.</li>"
+        f"<li><b>{kinds[k]}</b> ({len(v)} case{'s' if len(v) > 1 else ''}): build + run {rng([a for a, _ in v])}, "
+        f"inside <code>solve_ivp</code> {rng([b for _, b in v])}.</li>"
         for k, v in by_kind.items()
     )
-    ratio_rng = f"{min(speed_warm):.2f}–{max(speed_warm):.2f}×"
+    obj_txt = ""
+    if f64_cut:
+        f64_dev = max(
+            summary[c]["accuracy"]["f64_vs_upstream"]["max"]
+            for c in cases
+            if "f64_vs_upstream" in summary[c]["accuracy"]
+        )
+        obj_txt = f"""<p><b>Most of the single-compound gap is an input-dtype artefact, not a psdm improvement.</b>
+Upstream's single-compound inputs were built the way upstream's <code>test_PSDM.py</code> builds them, by
+transposing the <code>data</code> sheet of <code>test.xlsx</code>. That sheet mixes numbers with the string
+<code>influentID</code>, so the chemical-property and K-data frames have dtype <code>object</code>. The object
+dtype carries through to the bed coefficients, and the two <code>np.matmul</code> calls in upstream's
+right-hand side then run as Python-object loops. Built that way, upstream is
+{rng([a / p for a, _, p in f64_cut])} slower than psdm. Converting the same inputs to float64 (the
+<em>float64 inputs</em> column) makes upstream {rng([a / f for a, f, _ in f64_cut])} faster with no change to its
+code, and leaves psdm only {rng([f / p for _, f, p in f64_cut])} ahead. The float64 run changes upstream's output
+by at most {pct(f64_dev)} of C0, through a slightly different step sequence.</p>"""
 
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -793,77 +872,100 @@ def render(summary, env, repeats):
 from, on {len(cases)} cases, {repeats} fresh-process runs per case and implementation. Generated by
 <code>scripts/benchmark.py</code> on {html.escape(env["date"])}.</p>
 <div class="kpis">
-<div class="kpi"><b>{faster:.2f}×</b><span>geometric-mean speed-up, warm build + run (range {ratio_rng})</span></div>
-<div class="kpi"><b>{gm(speed_cold):.2f}×</b><span>geometric-mean speed-up, first call in a fresh process</span></div>
+<div class="kpi"><b>{gm(all_fair):.2f}×</b><span>geometric-mean speed-up, build + run, against upstream with float64 inputs (range {rng(all_fair)})</span></div>
+<div class="kpi"><b>{gm(all_int):.2f}×</b><span>geometric-mean speed-up inside <code>solve_ivp</code> (range {rng(all_int)})</span></div>
 <div class="kpi"><b>{pct(worst_up)}</b><span>worst max |psdm − upstream| / C0 across all cases</span></div>
 <div class="kpi"><b>{pct(worst_ad)}</b><span>worst max |psdm − AdDesignS| / C0 (single-compound cases)</span></div>
 </div>
-<div class="verdict"><p>psdm is faster in every case, but by how much depends on the case:</p>
+<div class="verdict">
+<p><b>The ODE algorithm is the same.</b> Both codes integrate the same equations with scipy BDF, the same
+tolerances and the same Jacobian sparsity pattern. Step and RHS-evaluation counts agree within
+{pct(max_count_dev, 1)}.</p>
+{obj_txt}
+<p><b>What psdm actually gains</b>, against upstream with float64 inputs:</p>
 <ul>{verdict}</ul>
-<p>Where <code>solve_ivp</code> time is about equal, the gain is overhead outside the integrator (model setup,
-output handling). Both codes produce the same Jacobian sparsity pattern and nearly the same step counts, so the
-integrator gap in the single-compound cases comes from a cheaper right-hand side per evaluation.</p></div>
+<p>Most of that gain is outside the integrator. Upstream rebuilds per-minute tables for influent, fouling and
+tortuosity on every run, one point per simulated minute (about 250,000 points for 174 days and 1.44 million for
+the 1,000-day multi-component case), plus the Jacobian pattern; it also copies
+DataFrames and computes a fit residual inside <code>run_psdm_kfit</code>. psdm builds these on the solver's own
+time scale. Inside the integrator the two are close: per RHS evaluation (integrate time / RHS evaluations,
+which includes Jacobian and LU work) upstream takes {rng(rhs_ratio)} as long as psdm.</p></div>
 
 <h2>Summary</h2>
 <p>Times are the median of {repeats} runs (min–max below) of object construction plus simulation, second call
-inside each process. Speed-up = upstream median / psdm median; the small line gives the same ratio for the
-first (cold) call. Accuracy is the largest absolute difference over the curve, divided by the influent
-concentration C0.</p>
+inside each process. Two upstream variants are shown: <em>upstream</em> builds the inputs exactly as upstream's
+<code>test_PSDM.py</code> does (object dtype in the single-compound cases), and <em>float64 inputs</em> converts the
+same inputs to float64 first. <b>Speed-up</b> is against the float64 variant where it exists, otherwise against
+upstream (whose inputs are already float64 there); the small line is the same ratio for the first, cold call.
+<em>vs as-is</em> is the ratio against the object-dtype variant. <em>solve_ivp</em> and <em>outside</em> split the
+speed-up into the time inside the integrator and everything else (build + run − integrate). Accuracy is the
+largest absolute difference over the curve divided by the influent concentration C0, against the as-is upstream
+run.</p>
 <div class="tablewrap"><table>
-<thead><tr><th>Case</th><th>upstream</th><th>psdm</th><th>speed-up</th><th>max |Δ|/C0 vs upstream</th>
+<thead><tr><th>Case</th><th>upstream<br><small>test_PSDM.py inputs</small></th><th>upstream<br><small>float64 inputs</small></th>
+<th>psdm</th><th>speed-up</th><th>vs as-is</th><th>solve_ivp</th><th>outside</th><th>max |Δ|/C0 vs upstream</th>
 <th>max |Δ|/C0 vs AdDesignS</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
 
 <h2>Breakthrough curves</h2>
 <div class="legend"><span><i style="border-color:var(--s1)"></i>upstream EPA PSDM</span>
 <span><i class="dash" style="border-color:var(--s2)"></i>psdm</span>
 <span><i class="dot"></i>AdDesignS (every few points shown)</span></div>
-<p>Effluent concentration as a fraction of C0; the strip under each chart is psdm − upstream. Hover a chart for values.</p>
+<p>Effluent concentration as a fraction of C0; the strip under each chart is psdm − upstream (as-is run). Hover a
+chart for values.</p>
 <div class="grid">{"".join(charts)}</div>
 
 <h2>Where the time goes</h2>
 <p>Medians in seconds. <em>read</em>: Excel input (cold call); <em>build</em>: constructing the model objects;
 <em>run</em>: the simulation call; <em>integrate</em>: time inside <code>scipy.integrate.solve_ivp</code> only;
-<em>run − integrate</em>: everything else in the run call (setup of matrices, fouling, output conversion and
-interpolation; upstream also computes a fit residual it does not need here). <em>cold</em>: build + run on the first
-call in the process. <em>import</em>: <code>import psdm</code> (or the upstream module) in a fresh process.</p>
+<em>run − integrate</em>: everything else in the run call (setup of matrices, per-minute influent/fouling tables,
+output conversion and interpolation; upstream also computes a fit residual it does not need here). <em>cold</em>:
+build + run on the first call in the process. <em>import</em>: <code>import psdm</code> (or the upstream module) in
+a fresh process.</p>
 <div class="tablewrap"><table><thead><tr><th>Case</th><th>impl</th><th>read</th><th>build</th><th>run</th>
 <th>integrate</th><th>run − integrate</th><th>cold build+run</th><th>import</th></tr></thead>
 <tbody>{"".join(detail)}</tbody></table></div>
 
 <h2>Solver work</h2>
-<p>Both implementations call <code>solve_ivp</code> with BDF, default tolerances (rtol 1e-3, atol 1e-6) and a sparse
-Jacobian pattern; scipy estimates the Jacobian by finite differences. Counts are from the first run and were
-identical in every repeat. Cost per RHS evaluation = warm integrate time / nfev (it includes the finite-difference
-Jacobian and LU work, so it is a per-step cost proxy, not a pure RHS timing).</p>
-<div class="tablewrap"><table><thead><tr><th rowspan="2">Case</th><th colspan="2">steps</th><th colspan="2">RHS evals</th>
-<th colspan="2">Jacobians</th><th colspan="2">LU decomps</th><th colspan="2">ms / RHS eval</th></tr>
-<tr><th>upstream</th><th>psdm</th><th>upstream</th><th>psdm</th><th>upstream</th><th>psdm</th><th>upstream</th><th>psdm</th>
-<th>upstream</th><th>psdm</th></tr></thead><tbody>{"".join(solver)}</tbody></table></div>
+<p>All implementations call <code>solve_ivp</code> with BDF, default tolerances (rtol 1e-3, atol 1e-6) and the same
+sparse Jacobian pattern; scipy estimates the Jacobian by finite differences. Counts are from the first run and were
+identical in every repeat. The small differences come from floating-point round-off in different but equivalent
+arithmetic. Cost per RHS evaluation = warm integrate time / nfev. It includes the finite-difference Jacobian and LU
+work, so it is a per-step cost proxy, not a pure RHS timing.</p>
+<div class="tablewrap"><table><thead><tr><th rowspan="2">Case</th><th colspan="3">steps</th><th colspan="3">RHS evals</th>
+<th colspan="3">Jacobians</th><th colspan="3">LU decomps</th><th colspan="3">ms / RHS eval</th></tr>
+<tr>{"<th>up</th><th>up f64</th><th>psdm</th>" * 5}</tr></thead><tbody>{"".join(solver)}</tbody></table></div>
 
 <h2>Methods</h2>
 <ul>
 <li><b>Implementations.</b> Upstream: <code>psdm/PSDM.py</code> from USEPA/Water_Treatment_Models at commit
 {UPSTREAM_COMMIT}, unmodified, imported from a fresh clone. New: the <code>psdm</code> package from this repository.
-Both run in the same virtual environment, so numpy, scipy and pandas builds are identical.</li>
+All run in the same virtual environment, so numpy, scipy and pandas builds are identical.</li>
+<li><b>Upstream input variants.</b> In the single-compound cases the upstream inputs are built as in
+upstream's <code>test_PSDM.py</code> and this repository's <code>tests/data/reference/generate.py</code>, by
+transposing the <code>data</code> sheet, which produces object-dtype frames. The <em>float64 inputs</em> control group
+applies <code>.astype(float)</code> to the chemical-property and K-data frames and converts the numeric entries of
+the column Series; nothing else changes. The multi-component and variable-influent cases read their inputs with
+upstream's <code>process_input_file</code> and <code>process_input_data</code>, which already return numeric
+dtypes, so they have no separate control group.</li>
 <li><b>Process isolation.</b> Each timed sample is a new <code>python -I</code> process that imports one
-implementation and runs one case twice. Runs alternate between implementations (order flipped per case and
-repeat) to spread out drift from thermal or background load.</li>
+implementation and runs one case twice. The order of implementations rotates per case and repeat to spread out
+drift from thermal or background load.</li>
 <li><b>What is timed.</b> <em>build + run</em> = upstream <code>PSDM(...)</code> construction plus
 <code>run_psdm_kfit</code> (single-compound and variable-influent cases, the call the upstream examples use) or
 <code>run_psdm</code> (multi-component); for psdm, building <code>Column</code>/<code>Compound</code> objects
 (or <code>Dataset.compounds()</code>) plus <code>simulate()</code>. Excel reading is timed separately and excluded
 from the headline; so are interpreter start-up and package import.</li>
 <li><b>Cases.</b> Single compound (TCE) from the AdDesignS verification set in <code>tests/data/addesigns_test.xlsx</code>
-(the upstream <code>test.xlsx</code>), constant influent for 174 d, default nr = 14, nz = 19 — this adds the 25 mg/L
-Rhine and Organic Free cases to the five used in the test suite because AdDesignS output exists for them.
+(the upstream <code>test.xlsx</code>), constant influent for 174 d, default nr = 14, nz = 19. This adds the 25 mg/L
+Rhine and Organic Free cases to the five used in the test suite, because AdDesignS output exists for them.
 Multi-component: <code>examples/Example_Multi.xlsx</code>, nr = 4, nz = 8, ne = 2, as in
 <code>tests/data/reference/generate.py</code>. Variable influent: <code>examples/Example_TCE.xlsx</code> sheet
 <code>data_variable</code> (piecewise-linear TCE influent 3–5 mg/L), nr = 8, nz = 12, as in upstream
 <code>Example_TCE.py</code>, with and without Rhine fouling.</li>
-<li><b>Accuracy.</b> Both effluent curves are linearly interpolated onto 349 evenly spaced times and compared;
+<li><b>Accuracy.</b> Effluent curves are linearly interpolated onto 349 evenly spaced times and compared;
 max and RMS of |psdm − upstream| / C0 are reported (for multi-component cases, the worst compound). AdDesignS
 comparisons use the sheets 5, 25, 50, 5no, 25no, 50no and 50K at their own output times, keeping only rows with
-C &gt; 0 (the sheets end in negative sentinel rows, and the first rows are ±1e-3 noise), as in the test suite.
+C &gt; 0, as in the test suite. The sheets end in negative sentinel rows, and their first rows are ±1e-3 noise.
 AdDesignS output stops at 105 d for the Rhine cases.</li>
 </ul>
 <h2>Limitations</h2>
@@ -872,9 +974,10 @@ AdDesignS output stops at 105 d for the Rhine cases.</li>
 but still depend on the BLAS and scipy version.</li>
 <li>The cases are small (tens to a few hundred ODEs). Large multi-component problems were not benchmarked.</li>
 <li>Upstream <code>run_psdm_kfit</code> also computes a sum of squares against (empty) effluent data and copies
-DataFrames; that overhead is part of its normal API and is counted. The <em>integrate</em> column isolates the solver
-for a like-for-like comparison.</li>
-<li>Fitting routines (K/1/n search, ds fitting), capacity and uncertainty tools were not timed.</li>
+DataFrames; that overhead is part of its normal API and is counted. The <em>solve_ivp</em> column isolates the
+integrator for a like-for-like comparison.</li>
+<li>Fitting routines (K/1/n search, ds fitting), capacity and uncertainty tools were not timed. Upstream's fitting
+loops call <code>run_psdm</code> many times, so the per-run setup cost above would multiply there.</li>
 <li>Agreement with upstream is not agreement with reality; the only external reference here is AdDesignS.</li>
 </ul>
 <h2>Environment</h2>
@@ -894,14 +997,19 @@ def main(argv=None):
     ap.add_argument("--out", type=Path, default=ROOT / "benchmarks" / "report.html")
     ap.add_argument("--json", type=Path, default=ROOT / "benchmarks" / "results.json")
     ap.add_argument("--from-json", type=Path, help="re-render the report from saved results")
-    ap.add_argument("--worker", choices=["upstream", "psdm"], help=argparse.SUPPRESS)
+    ap.add_argument(
+        "--worker", choices=["upstream", "upstream_f64", "psdm"], help=argparse.SUPPRESS
+    )
     ap.add_argument("--case", help=argparse.SUPPRESS)
     ap.add_argument("--worker-out", type=Path, help=argparse.SUPPRESS)
     a = ap.parse_args(argv)
 
     if a.worker:
         warnings.simplefilter("ignore")
-        res = worker_upstream(a.case, a.upstream) if a.worker == "upstream" else worker_psdm(a.case)
+        if a.worker == "psdm":
+            res = worker_psdm(a.case)
+        else:
+            res = worker_upstream(a.case, a.upstream, float_inputs=a.worker == "upstream_f64")
         a.worker_out.write_text(json.dumps(res))
         return
 

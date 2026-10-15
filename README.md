@@ -72,19 +72,35 @@ timing breakdown, solver statistics and methods, is
 [`benchmarks/report.html`](benchmarks/report.html) (download it and open it in a browser). The raw
 numbers are in [`benchmarks/results.json`](benchmarks/results.json).
 
-| Cases | Speed-up, model setup + run | Speed-up, ODE solver only | Max \|psdm − EPA\| / C0 |
-|---|---|---|---|
-| Single compound, constant influent (7 AdDesignS cases) | 2.5–3.0× | 2.4–2.8× | 0.28 % |
-| Multi-component (`Example_Multi.xlsx`, 2 cases) | 2.5–2.9× | 1.0–1.2× | 0.33 % |
-| Variable influent (`Example_TCE.xlsx`, 2 cases) | 1.2–1.4× | 1.0× | 0.20 % |
+| Cases | Speed-up vs EPA code as in its `test_PSDM.py` | Speed-up vs EPA code with float64 inputs | Speed-up inside the ODE solver | Max \|psdm − EPA\| / C0 |
+|---|---|---|---|---|
+| Single compound, constant influent (7 AdDesignS cases) | 2.4–3.0× | 1.1–1.4× | 1.0–1.1× | 0.28 % |
+| Multi-component (`Example_Multi.xlsx`, 2 cases) | 2.5–2.9× | same | 1.0–1.2× | 0.33 % |
+| Variable influent (`Example_TCE.xlsx`, 2 cases) | 1.2–1.4× | same | 1.0–1.1× | 0.20 % |
 
-Measured with median timings on an AMD Ryzen 7 7800X3D, Windows 11, Python 3.10, numpy 2.2.6,
-scipy 1.15.3 and pandas 2.3.3. Both codes take nearly the same number of solver steps. The gain
-in the single-compound cases comes from a cheaper right-hand side; elsewhere it comes from less
-overhead outside the integrator. In the single-compound cases, psdm stays within 0.57 % of C0 of
-AdDesignS, and the EPA code within 0.62 %. These maxima are measured on a 349-point resampled
-curve, so they differ slightly from the test-suite tolerance above. Re-run with
-`uv run python scripts/benchmark.py`.
+Speed-ups compare model setup plus run, using median timings on an AMD Ryzen 7 7800X3D,
+Windows 11, Python 3.10, numpy 2.2.6, scipy 1.15.3 and pandas 2.3.3.
+
+**The numerical algorithm is the same.** Both codes use scipy's BDF solver with the same
+tolerances and the same Jacobian sparsity pattern, take nearly the same number of steps, and
+spend about the same time inside the solver.
+
+**The large single-compound gap is mostly an artefact of how the EPA code's inputs were
+built.** Following the EPA `test_PSDM.py`, they come from transposing a spreadsheet sheet that
+also contains a text field. That gives the property tables dtype `object`, so two matrix products
+in the EPA right-hand side run as slow Python-object loops. Converting the same inputs to float64
+makes the EPA code 2.1–2.3× faster without changing its code. The multi-component and
+variable-influent inputs are read with the EPA code's own Excel reader, which already returns
+float64, so they have no separate float64 run ("same" above).
+
+**psdm's real advantage is lower setup cost.** The EPA code rebuilds per-minute influent,
+fouling and tortuosity tables (1.44 million points per table for the 1,000-day multi-component
+case) and the Jacobian pattern on every run. This matters most for long simulations and for
+fitting loops that call the model many times.
+
+In the single-compound cases, psdm stays within 0.57 % of C0 of AdDesignS, and the EPA code
+within 0.62 %. These maxima are measured on a 349-point resampled curve, so they differ slightly
+from the test-suite tolerance above. Re-run with `uv run python scripts/benchmark.py`.
 
 ## Credits
 
