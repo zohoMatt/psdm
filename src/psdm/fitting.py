@@ -189,7 +189,7 @@ def fit_surface_diffusivity(
     factors
         Multipliers of ``ds_ref`` to try; default ``numpy.linspace(1e-10, 1, 30)``.
     ds_ref
-        Reference ``ds`` (cm²/s); default is the value from the pore-to-surface diffusion
+        Reference ``ds`` (cm²/s); default is the value from the surface-to-pore diffusion
         flux ratio ``column.psdfr`` that :func:`psdm.simulate` would use.
     refine
         Refine the best grid point with :func:`scipy.optimize.minimize_scalar`.

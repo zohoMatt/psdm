@@ -31,14 +31,14 @@ Natural organic matter gradually reduces adsorption capacity. Set the background
 (one of {data}`psdm.fouling.WATER`) and give each compound a `fouling_class` from
 {data}`psdm.fouling.CHEMICAL`, an explicit `(b1, b2)` pair, or `"PFAS"` to look the compound
 name up in {data}`psdm.fouling.PFAS`. With fouling, surface diffusion is effectively switched
-off and pore tortuosity increases with time, as in AdDesignS.
+off and pore tortuosity increases with time, following the EPA code (see {doc}`model`).
 
 ## Mass-transfer parameters
 
-By default the film coefficient `kf` comes from the Chern & Chien (modified Gnielinski)
-correlation (choose another with `correlation=`, see {data}`psdm.correlations.SHERWOOD`), the
+By default the film coefficient `kf` comes from the modified Gnielinski correlation labelled
+"Chern and Chien" (choose another with `correlation=`, see {data}`psdm.correlations.SHERWOOD`), the
 pore diffusivity `dp` from the Hayduk–Laudie liquid diffusivity divided by tortuosity, and the
-surface diffusivity `ds` from the pore-to-surface diffusion flux ratio `psdfr`. Any of them can
+surface diffusivity `ds` from the surface-to-pore diffusion flux ratio `psdfr`. Any of them can
 be fixed per compound:
 
 ```python

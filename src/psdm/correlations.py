@@ -1,8 +1,11 @@
 """Film mass-transfer correlations.
 
 Each correlation returns the Sherwood number ``Sh = kf * d_p / D_l``; :func:`film_transfer`
-turns it into the film transfer coefficient ``kf`` (cm/s). Correlations are collected from
-Xu et al. (2013), *J. Zhejiang Univ. Sci. A* 14(3):155–176.
+turns it into the film transfer coefficient ``kf`` (cm/s). The set and the names follow the US
+EPA PSDM code, which points to the review by Xu, Cai & Pan (2013), "Mathematically modeling
+fixed-bed adsorption in aqueous systems", *J. Zhejiang Univ. Sci. A* 14(3):155–176,
+doi:10.1631/jzus.A1300029. Attributions to the original papers are as labelled there and
+have not been individually verified.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ def _gnielinski(re, sc, ebed):
 
 
 SHERWOOD: dict[str, Callable] = {
-    # Chern & Chien (2002), modified Gnielinski -- the PSDM/AdDesignS default
+    # modified Gnielinski form, labelled "Chern and Chien" in the EPA code; the PSDM default
     "Chern and Chien": lambda re, sc, eb: (
         (1 + 1.5 * (1 - eb)) * (2 + 0.644 * re**0.5 * sc ** (1 / 3))
     ),

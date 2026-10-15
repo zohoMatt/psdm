@@ -22,7 +22,7 @@ from .correlations import film_transfer
 from .model import Column, Compound
 
 SURFACE_DIFFUSION_FOULED_FACTOR = 1e-10
-"""Surface diffusion is effectively switched off in fouled water (AdDesignS behaviour)."""
+"""Surface diffusion is effectively switched off in fouled water (as in the EPA code)."""
 
 
 @dataclass

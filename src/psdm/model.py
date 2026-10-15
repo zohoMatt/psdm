@@ -35,7 +35,8 @@ class Column:
     tortuosity
         Pore tortuosity used in organic-free water.
     psdfr
-        Pore-to-surface diffusion flux ratio used to estimate the surface diffusivity.
+        Surface-to-pore diffusion flux ratio (SPDFR) used to estimate the surface diffusivity:
+        ``ds = psdfr * epor * dp * C0 / (rhop * q0)``. The name follows the EPA code.
     name
         Label for the adsorbent / column.
     """

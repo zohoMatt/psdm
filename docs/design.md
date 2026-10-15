@@ -66,7 +66,7 @@ fit.ds, fit.ds / fit.ds_ref, fit.evaluations
 ```
 
 `ds = factor × ds_ref` is evaluated on a grid of factors (the EPA default
-`numpy.linspace(1e-10, 1, 30)`), where `ds_ref` is the value from the pore-to-surface
+`numpy.linspace(1e-10, 1, 30)`), where `ds_ref` is the value from the surface-to-pore
 diffusion flux ratio, and the best point is then refined. The EPA code computed its
 reference without the Freundlich `K` term, so its `ds_base` differs from `ds_ref`.
 

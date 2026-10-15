@@ -8,8 +8,10 @@ Fouling reduces the Freundlich ``K`` over time by the multiplier
     r_1 = b_1 a_1 + b_2,\\; r_2 = b_1 a_2,\\; r_3 = b_1 a_3,\\; r_4 = b_1 a_4
 
 where ``a1..a4`` describe the water (:data:`WATER`) and ``b1, b2`` the compound class
-(:data:`CHEMICAL`). ``t`` is in minutes. Parameters follow AdDesignS; PFAS coefficients are
-from Burkhardt et al. (2022), J. Environ. Eng. 148(3).
+(:data:`CHEMICAL`). ``t`` is in minutes. All tables are taken from the US EPA PSDM code, whose
+comments state the water/compound-class values were edited to match AdDesignS and attribute
+the PFAS values to a Burkhardt et al. (2020) manuscript submitted to AWWA Water Science. They
+have not been checked against a primary publication.
 """
 
 from __future__ import annotations
