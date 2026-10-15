@@ -6,10 +6,19 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-14
+
+First release.
+
 ### Added
 
-- `scripts/benchmark.py` and `benchmarks/report.html`: timing and accuracy benchmark against
-  the original EPA PSDM code (11 cases, fresh process per run).
+- `psdm.simulate`: multi-component PSDM with NOM fouling, rewritten from the US EPA code.
+- `psdm.Column` and `psdm.Compound` input objects with unit conversion.
+- `psdm.fit_freundlich` and `psdm.fit_isotherm` for parameter estimation.
+- `psdm.io.read_excel` for the EPA PSDM Excel template.
+- Validation tests against AdDesignS and the original EPA implementation.
+- `scripts/benchmark.py` and `benchmarks/report.html`: case-by-case comparison with the
+  original EPA PSDM code (11 cases).
 - `psdm.estimate_capacity`: Freundlich `K` from breakthrough data for an assumed `1/n`
   (upstream `__calculate_capacity`), with breakthrough detection and logistic/linear
   extrapolation. Validated against the EPA code.
@@ -33,22 +42,6 @@ All notable changes to this project are documented here. The format follows
 - Lead–lag configurations (`lead_lag_class.py`, needs the `ixpy` package).
 - The equilibrium column model (`ecm.py`).
 - `run_all_smart` fouling-factor estimates and `break_type='force'` breakthrough input.
-
-## [0.1.0] - 2026-10-14
-
-### Added
-
-- `psdm.simulate`: multi-component PSDM with NOM fouling, rewritten from the US EPA code.
-- `psdm.Column` and `psdm.Compound` input objects with unit conversion.
-- `psdm.fit_freundlich` and `psdm.fit_isotherm` for parameter estimation.
-- `psdm.io.read_excel` for the EPA PSDM Excel template.
-- Validation tests against AdDesignS and the original EPA implementation.
-
-### Not yet ported from the EPA code (0.1.0)
-
-- Capacity estimation from breakthrough data without `K` (`__calculate_capacity`).
-- Lead–lag configurations, the equilibrium column model (ECM), full-scale prediction tools,
-  model uncertainty bands and surface-diffusivity fitting.
 
 [Unreleased]: https://github.com/zohoMatt/psdm/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/zohoMatt/psdm/releases/tag/v0.1.0
