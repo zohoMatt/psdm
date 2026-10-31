@@ -19,6 +19,7 @@ from scipy.integrate import solve_ivp
 
 from . import collocation, fouling, properties, units
 from .correlations import film_transfer
+from .errors import InputError, SolverDivergedError, StepSizeTooSmallError
 from .model import Column, Compound
 
 SURFACE_DIFFUSION_FOULED_FACTOR = 1e-10
@@ -42,6 +43,8 @@ class Result:
         The simulated compounds.
     solution
         Raw :func:`scipy.integrate.solve_ivp` output.
+    diagnostics
+        Dimensionless mass-transfer groups per compound (columns), see :func:`simulate`.
     """
 
     effluent: pd.DataFrame
@@ -49,6 +52,7 @@ class Result:
     column: Column
     compounds: list[Compound]
     solution: object
+    diagnostics: pd.DataFrame | None = None
 
     def __call__(self, t, compound: str | None = None):
         """Effluent concentration interpolated at times ``t``.
@@ -76,6 +80,7 @@ class _System:
     conc_scale: np.ndarray  # user concentration per unit of dimensionless concentration
     names: list[str]
     mass_transfer: pd.DataFrame
+    diagnostics: pd.DataFrame
 
     def sparsity(self) -> sparse.csr_matrix:
         n_comp, nr1, nz = self.shape
@@ -85,26 +90,28 @@ class _System:
 def _as_compounds(compounds: Compound | Sequence[Compound]) -> list[Compound]:
     out = [compounds] if isinstance(compounds, Compound) else list(compounds)
     if not out:
-        raise ValueError("at least one compound is required")
+        raise InputError("at least one compound is required", field="compounds")
     names = [c.name for c in out]
     if len(set(names)) != len(names):
-        raise ValueError(f"duplicate compound names: {names}")
+        raise InputError(f"duplicate compound names: {names}", field="compounds")
     return out
 
 
 def _as_influent(influent: pd.DataFrame | pd.Series, names: list[str]) -> pd.DataFrame:
     if isinstance(influent, pd.Series):
         if len(names) != 1:
-            raise ValueError("a Series influent is only allowed for a single compound")
+            raise InputError(
+                "a Series influent is only allowed for a single compound", field="influent"
+            )
         influent = influent.to_frame(names[0])
     missing = [n for n in names if n not in influent.columns]
     if missing:
-        raise ValueError(f"influent has no data for {missing}")
+        raise InputError(f"influent has no data for {missing}", field="influent")
     influent = influent[names].sort_index()
     if len(influent) < 2:
-        raise ValueError("influent needs at least two time points")
+        raise InputError("influent needs at least two time points", field="influent")
     if influent.index[0] != 0:
-        raise ValueError("influent must start at time 0")
+        raise InputError("influent must start at time 0", field="influent")
     return influent
 
 
@@ -186,6 +193,13 @@ def _build_system(
     bedp = edp * (1.0 - d) * edd
     stdv = kf * (1.0 - ebed) * tau / (ebed * rad) * dgt  # modified Stanton number
     stdv_dg = stdv / dg
+    st = kf * (1.0 - ebed) * tau / (ebed * rad)  # Stanton number
+    edp_eff = dp * dgp * tau / rad**2  # pore diffusion modulus with the actual dp
+    diagnostics = pd.DataFrame(
+        [st, eds, edp_eff, st / eds, st / edp_eff],
+        index=["St", "Eds", "Edp", "Bi_s", "Bi_p"],
+        columns=names,
+    )
     tconv = 60.0 / (tau * dg1)  # dimensionless time per minute
 
     # --- time-dependent inputs (time in minutes)
@@ -253,6 +267,7 @@ def _build_system(
         conc_scale=cb0 * mw / mass_mul,
         names=names,
         mass_transfer=mass_transfer,
+        diagnostics=diagnostics,
     )
 
 
@@ -298,6 +313,30 @@ def simulate(
         Film-transfer correlation, see :data:`psdm.correlations.SHERWOOD`.
     method, rtol, atol
         Passed to :func:`scipy.integrate.solve_ivp`.
+
+    Returns
+    -------
+    Result
+        ``Result.diagnostics`` holds, per compound, the dimensionless groups
+
+        - ``St``: Stanton number ``kf (1-ε) τ / (ε R)``,
+        - ``Eds``: surface diffusion modulus ``Ds Dgs τ / R²``,
+        - ``Edp``: pore diffusion modulus ``Dp Dgp τ / R²``,
+        - ``Bi_s = St / Eds`` and ``Bi_p = St / Edp``: Biot numbers,
+
+        with ``τ`` the fluid residence time in the bed voids and ``Dgs``, ``Dgp`` the surface
+        and pore solute distribution parameters at the initial influent concentration. They
+        are evaluated with the virgin Freundlich ``K`` and the initial tortuosity: in fouled
+        water ``K`` and the tortuosity change during the run, which these numbers do not
+        follow. In fouled water ``Ds`` is divided by ``1e10`` and ``Eds`` is floored at
+        ``1e-130`` as in the solver, so ``Bi_s`` is very large.
+
+    Raises
+    ------
+    psdm.errors.InputError
+        Invalid ``compounds`` or ``influent`` (a ``ValueError``).
+    psdm.errors.StepSizeTooSmallError, psdm.errors.SolverDivergedError
+        The integration failed (both are ``RuntimeError`` subclasses).
     """
     comps = _as_compounds(compounds)
     influent = _as_influent(influent, [c.name for c in comps])
@@ -318,17 +357,25 @@ def simulate(
     options = {}
     if method in ("BDF", "Radau"):
         options["jac_sparsity"] = system.sparsity()
-    sol = solve_ivp(
-        system.rhs,
-        (0.0, system.t_end),
-        np.zeros(np.prod(system.shape)),
-        method=method,
-        rtol=rtol,
-        atol=atol,
-        **options,
-    )
+    try:
+        sol = solve_ivp(
+            system.rhs,
+            (0.0, system.t_end),
+            np.zeros(np.prod(system.shape)),
+            method=method,
+            rtol=rtol,
+            atol=atol,
+            **options,
+        )
+    except (RuntimeError, np.linalg.LinAlgError, FloatingPointError) as exc:
+        # e.g. SuperLU "Factor is exactly singular" inside the implicit step
+        raise SolverDivergedError(f"ODE solver failed: {exc}") from exc
     if not sol.success:
-        raise RuntimeError(f"ODE solver failed: {sol.message}")
+        if "step size" in str(sol.message).lower():
+            raise StepSizeTooSmallError(f"ODE solver failed: {sol.message}")
+        raise SolverDivergedError(f"ODE solver failed: {sol.message}")
+    if not np.isfinite(sol.y).all():
+        raise SolverDivergedError("ODE solver produced non-finite values")
 
     n_comp, nr1, mz = system.shape
     c_out = sol.y.reshape((n_comp, nr1, mz, -1))[:, nr1 - 1, mz - 1, :]
@@ -341,4 +388,5 @@ def simulate(
         column=column,
         compounds=comps,
         solution=sol,
+        diagnostics=system.diagnostics,
     )

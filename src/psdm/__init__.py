@@ -1,6 +1,6 @@
 """Pore and Surface Diffusion Model (PSDM) for fixed-bed adsorbers."""
 
-from . import fullscale
+from . import errors, fullscale, uncertainty
 from .capacity import CapacityEstimate, estimate_capacity
 from .fitting import DsFitResult, FitResult, fit_freundlich, fit_surface_diffusivity, sum_of_squares
 from .isotherms import IsothermFit, fit_isotherm
@@ -8,7 +8,7 @@ from .model import Column, Compound
 from .solver import Result, simulate
 from .uncertainty import Uncertainty, model_uncertainty
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "CapacityEstimate",
@@ -20,6 +20,7 @@ __all__ = [
     "Result",
     "Uncertainty",
     "__version__",
+    "errors",
     "estimate_capacity",
     "fit_freundlich",
     "fit_isotherm",
@@ -28,4 +29,5 @@ __all__ = [
     "model_uncertainty",
     "simulate",
     "sum_of_squares",
+    "uncertainty",
 ]

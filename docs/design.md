@@ -55,6 +55,24 @@ See {data}`psdm.uncertainty.PARAMETERS` for what each option changes. Mass-trans
 parameters stay at their base-case values in all runs. Fractions are given as `0.1` for 10 %
 (the EPA code used `10`).
 
+### Running the simulations yourself
+
+`model_uncertainty` runs all simulations one after another. To run them in parallel (or on
+another machine), split it in two: {func}`psdm.uncertainty.plan` lists the runs and
+{func}`psdm.uncertainty.envelope` combines their results. `plan` simulates only the base
+case, because its `kf`, `dp` and `ds` are held fixed in every perturbed run; each
+{class}`~psdm.uncertainty.Run` is picklable.
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+from psdm import uncertainty
+
+plan = uncertainty.plan(column, tce, influent, water="Rhine", conc_unit="mg/L", capacity=0.1)
+with ProcessPoolExecutor() as pool:
+    results = list(pool.map(uncertainty.Run.simulate, plan.runs))
+u = uncertainty.envelope(plan, results)   # identical to model_uncertainty(...)
+```
+
 ## Surface-diffusivity fitting
 
 In organic-free water the surface diffusivity can be fitted to breakthrough data once `K` and
@@ -69,6 +87,24 @@ fit.ds, fit.ds / fit.ds_ref, fit.evaluations
 `numpy.linspace(1e-10, 1, 30)`), where `ds_ref` is the value from the surface-to-pore
 diffusion flux ratio, and the best point is then refined. The EPA code computed its
 reference without the Freundlich `K` term, so its `ds_base` differs from `ds_ref`.
+
+## Progress and cancelling fits
+
+{func}`psdm.fit_freundlich` and {func}`psdm.fit_surface_diffusivity` accept
+`callback(evaluations, best_ssq)`, called after every simulation. Raise any exception from it
+to stop the fit; the exception reaches the caller unchanged.
+{func}`psdm.fitting.surface_diffusivity_max_evaluations` gives an upper bound on the number of
+simulations of the ds fit, for a progress bar:
+
+```python
+from psdm.fitting import surface_diffusivity_max_evaluations
+
+total = surface_diffusivity_max_evaluations()
+fit = psdm.fit_surface_diffusivity(
+    column, tce, influent["TCE"], effluent, conc_unit="mg/L",
+    callback=lambda n, best: print(f"{n}/{total} ssq={best:.3g}"),
+)
+```
 
 ## Scaling columns
 
@@ -99,6 +135,11 @@ Crittenden et al., *MWH's Water Treatment*, as checked in the EPA code.
 fullscale.specific_throughput(
     full, tce, c0=50.0, threshold=5.0, ebcts=[5, 10, 15, 20], duration=1000,
 )
+
+# the same, one EBCT at a time (e.g. to run the simulations in parallel)
+col = fullscale.rescaled_column(full, 10.0)
+res = psdm.simulate(col, tce, pd.DataFrame({"TCE": [50.0, 50.0]}, index=[0.0, 1000.0]))
+fullscale.throughput_from_result(res, "TCE", 5.0)
 
 # days until a regulatory limit is first exceeded (2024 US EPA PFAS rule by default)
 res = psdm.simulate(full, pfas, influent_ng, conc_unit="ng/L")

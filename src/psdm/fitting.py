@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -14,6 +15,30 @@ from .solver import Result, simulate
 from .units import factor
 
 _FAILED = 1e30
+
+Callback = Callable[[int, float], None]
+"""Progress callback ``callback(evaluations, best_ssq)``.
+
+Called after every model simulation of a fit with the number of simulations so far and the
+lowest sum of squares seen so far (``1e30`` stands for a failed simulation). Raising any
+exception from the callback stops the fit immediately: the exception propagates to the
+caller unchanged and no further simulations run.
+"""
+
+
+class _Progress:
+    """Counts simulations and reports them to an optional callback."""
+
+    def __init__(self, callback: Callback | None):
+        self.callback = callback
+        self.evaluations = 0
+        self.best = float("inf")
+
+    def __call__(self, ssq: float) -> None:
+        self.evaluations += 1
+        self.best = min(self.best, ssq)
+        if self.callback is not None:
+            self.callback(self.evaluations, self.best)
 
 
 def sum_of_squares(
@@ -72,6 +97,7 @@ def fit_freundlich(
     q_factor_bounds: tuple[float, float] = (0.1, 10.0),
     until: float | None = None,
     max_evaluations: int = 200,
+    callback: Callback | None = None,
     **simulate_kw,
 ) -> FitResult:
     """Fit Freundlich ``K`` and ``1/n`` of one compound to observed breakthrough.
@@ -95,7 +121,10 @@ def fit_freundlich(
     until
         Only fit observations at or before this time (e.g. up to breakthrough).
     max_evaluations
-        Maximum number of model simulations.
+        Maximum number of model simulations of the search (one more is run at the optimum).
+    callback
+        Progress callback ``callback(evaluations, best_ssq)``, see :data:`Callback`. Raise
+        from it to cancel the fit.
     **simulate_kw
         Forwarded to :func:`psdm.simulate` (``water``, ``time_unit``, ``conc_unit``, ...).
     """
@@ -103,6 +132,7 @@ def fit_freundlich(
     c_ref = float(infl.mean()) * factor("concentration", simulate_kw.get("conc_unit", "ug/L"))
     q0 = compound.k * c_ref**compound.n_inv
     rows = []
+    progress = _Progress(callback)
 
     def trial(x) -> tuple[Compound, float, Result | None]:
         log_q, n_inv = x
@@ -114,6 +144,7 @@ def fit_freundlich(
         except (RuntimeError, ValueError, FloatingPointError):
             res, ssq = None, _FAILED
         rows.append((k, float(n_inv), ssq))
+        progress(ssq)  # outside the try: a cancelling exception must not count as a failure
         return trial_compound, ssq, res
 
     lo, hi = q_factor_bounds
@@ -168,6 +199,8 @@ def fit_surface_diffusivity(
     ds_ref: float | None = None,
     refine: bool = True,
     until: float | None = None,
+    refine_maxiter: int = 50,
+    callback: Callback | None = None,
     **simulate_kw,
 ) -> DsFitResult:
     """Fit the surface diffusivity ``ds`` of one compound to observed breakthrough.
@@ -195,6 +228,13 @@ def fit_surface_diffusivity(
         Refine the best grid point with :func:`scipy.optimize.minimize_scalar`.
     until
         Only fit observations at or before this time.
+    refine_maxiter
+        Maximum iterations of the refinement step.
+    callback
+        Progress callback ``callback(evaluations, best_ssq)``, see :data:`Callback`. Only the
+        trial simulations are reported; the reference run that computes ``ds_ref`` (when it
+        is not given) is not. :func:`surface_diffusivity_max_evaluations` gives the upper
+        bound on ``evaluations``. Raise from the callback to cancel the fit.
     **simulate_kw
         Forwarded to :func:`psdm.simulate`.
     """
@@ -210,6 +250,7 @@ def fit_surface_diffusivity(
         raise ValueError("factors must be positive")
     factors = np.unique(factors)
     evaluated: dict[float, tuple[float, Result | None]] = {}
+    progress = _Progress(callback)
 
     def trial(ds: float) -> float:
         if ds not in evaluated:
@@ -218,6 +259,7 @@ def fit_surface_diffusivity(
                 evaluated[ds] = (sum_of_squares(res, effluent, compound.name, until), res)
             except (RuntimeError, ValueError, FloatingPointError):
                 evaluated[ds] = (_FAILED, None)
+            progress(evaluated[ds][0])  # outside the try, see fit_freundlich
         return evaluated[ds][0]
 
     grid = factors * ds_ref
@@ -229,7 +271,7 @@ def fit_surface_diffusivity(
             lambda x: trial(float(np.exp(x))),
             bounds=(np.log(lo), np.log(hi)),
             method="bounded",
-            options={"xatol": 1e-3},
+            options={"xatol": 1e-3, "maxiter": refine_maxiter},
         )
     best = min(evaluated, key=lambda ds: evaluated[ds][0])
     ssq, res = evaluated[best]
@@ -238,3 +280,16 @@ def fit_surface_diffusivity(
     evaluations = pd.Series({ds: v[0] for ds, v in sorted(evaluated.items())}, name="ssq")
     evaluations.index.name = "ds"
     return DsFitResult(compound.with_(ds=best), best, ds_ref, ssq, res, evaluations)
+
+
+def surface_diffusivity_max_evaluations(
+    factors=None, refine: bool = True, refine_maxiter: int = 50
+) -> int:
+    """Upper bound on the number of simulations :func:`fit_surface_diffusivity` runs.
+
+    The grid points plus at most ``refine_maxiter + 1`` evaluations of the refinement (fewer
+    when it revisits a grid point). Use it as the denominator of a progress bar.
+    """
+    factors = np.linspace(1e-10, 1.0, 30) if factors is None else np.asarray(factors, float)
+    n = len(np.unique(factors))
+    return n + (refine_maxiter + 1 if refine and n > 1 else 0)

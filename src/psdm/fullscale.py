@@ -14,7 +14,7 @@ import pandas as pd
 
 from . import units
 from .model import Column, Compound
-from .solver import simulate
+from .solver import Result, simulate
 
 SIEVE_OPENING_MM: dict[str, float] = {
     "4": 4.76, "5": 4.0, "6": 3.36, "7": 2.83, "8": 2.38, "10": 2.0, "12": 1.68,
@@ -251,8 +251,13 @@ def rssct_design(
     return RSSCTDesign(column, scale, velocity * 36.0, duration, water)
 
 
-def _rescaled(column: Column, ebct: float) -> Column:
-    """Column with EBCT ``ebct``: more flow for shorter EBCTs, a larger bed for longer ones."""
+def rescaled_column(column: Column, ebct: float) -> Column:
+    """Column with empty-bed contact time ``ebct`` (min).
+
+    Shorter EBCTs than the column's are obtained by raising the flow rate; longer ones by
+    enlarging the bed (length and diameter by the same factor, mass with the volume) at
+    constant flow. Used by :func:`specific_throughput`.
+    """
     s = ebct / column.ebct
     if s <= 1:
         return column.with_(flow_rate=column.flow_rate / s)
@@ -260,6 +265,9 @@ def _rescaled(column: Column, ebct: float) -> Column:
     return column.with_(
         length=column.length * r, diameter=column.diameter * r, mass=column.mass * s
     )
+
+
+_rescaled = rescaled_column  # pre-0.2 private name
 
 
 def _first_exceedance(t, c, limit) -> float:
@@ -271,6 +279,25 @@ def _first_exceedance(t, c, limit) -> float:
     if i == 0:
         return float(t[0])
     return float(t[i - 1] + (limit - c[i - 1]) * (t[i] - t[i - 1]) / (c[i] - c[i - 1]))
+
+
+def throughput_from_result(
+    result: Result, compound: str, threshold: float, *, time_unit: str = "days"
+) -> float:
+    """Specific throughput (L/g) of ``result`` until ``compound`` first exceeds ``threshold``.
+
+    ``threshold`` is in the concentration unit of the simulation and ``time_unit`` is the
+    time unit it used. Returns ``nan`` if the threshold is never exceeded. Together with
+    :func:`rescaled_column` this is one point of :func:`specific_throughput`::
+
+        col = psdm.fullscale.rescaled_column(column, ebct)
+        res = psdm.simulate(col, compound, influent, ...)
+        psdm.fullscale.throughput_from_result(res, compound.name, threshold)
+    """
+    col = result.column
+    t = result.effluent.index.to_numpy()
+    t_break = _first_exceedance(t, result.effluent[compound].to_numpy(), threshold)
+    return col.flow_rate / 1e3 * t_break * units.factor("time", time_unit) / col.mass
 
 
 def specific_throughput(
@@ -316,17 +343,16 @@ def specific_throughput(
     def pick(value, name):
         return value[name] if isinstance(value, Mapping) else value
 
-    t_min = units.factor("time", time_unit)
     out = pd.DataFrame(index=pd.Index(np.asarray(ebcts, float), name="ebct"), dtype=float)
     for c in comps:
         infl = pd.DataFrame({c.name: [pick(c0, c.name)] * 2}, index=[0.0, float(duration)])
         values = []
         for ebct in out.index:
-            col = _rescaled(column, ebct)
+            col = rescaled_column(column, ebct)
             res = simulate(col, c, infl, time_unit=time_unit, conc_unit=conc_unit, **simulate_kw)
-            t = res.effluent.index.to_numpy()
-            t_break = _first_exceedance(t, res.effluent[c.name].to_numpy(), pick(threshold, c.name))
-            values.append(col.flow_rate / 1e3 * t_break * t_min / col.mass)
+            values.append(
+                throughput_from_result(res, c.name, pick(threshold, c.name), time_unit=time_unit)
+            )
         out[c.name] = values
     return out
 

@@ -8,6 +8,8 @@
 .. autoclass:: psdm.Result
    :members:
 
+The dimensionless groups in ``Result.diagnostics`` are described under *Returns* above.
+
 .. autoclass:: psdm.Column
    :members:
 
@@ -23,6 +25,9 @@
 .. autoclass:: psdm.FitResult
 
 .. autofunction:: psdm.sum_of_squares
+
+.. autodata:: psdm.fitting.Callback
+   :no-value:
 ```
 
 ## Capacity, uncertainty and diffusivity
@@ -45,9 +50,27 @@
 .. autodata:: psdm.uncertainty.PARAMETERS
    :no-value:
 
+.. autofunction:: psdm.uncertainty.plan
+
+.. autofunction:: psdm.uncertainty.envelope
+
+.. autoclass:: psdm.uncertainty.Run
+   :members:
+
+.. autoclass:: psdm.uncertainty.Plan
+
 .. autofunction:: psdm.fit_surface_diffusivity
 
 .. autoclass:: psdm.DsFitResult
+
+.. autofunction:: psdm.fitting.surface_diffusivity_max_evaluations
+```
+
+## Errors
+
+```{eval-rst}
+.. automodule:: psdm.errors
+   :members:
 ```
 
 ## Full-scale design

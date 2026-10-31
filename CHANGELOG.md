@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-30
+
+All additions are backward compatible: 0.1.0 signatures are unchanged and results are
+bit-for-bit identical.
+
+### Added
+
+- `psdm.errors`: `SolverError` (a `RuntimeError`) with `SolverDivergedError` and
+  `StepSizeTooSmallError`, and `InputError` (a `ValueError`) with a `field` attribute.
+  `simulate` raises these instead of bare `RuntimeError`/`ValueError`.
+- `Result.diagnostics`: Stanton number, surface and pore diffusion moduli and Biot numbers
+  per compound.
+- `callback(evaluations, best_ssq)` keyword for `fit_freundlich` and
+  `fit_surface_diffusivity`, called after every simulation; raising from it cancels the fit.
+- `fit_surface_diffusivity(refine_maxiter=50)` and
+  `psdm.fitting.surface_diffusivity_max_evaluations` for a progress denominator.
+- `psdm.uncertainty.plan`, `envelope`, `Run` and `Plan`: `model_uncertainty` split into
+  listing the runs and combining their results, so the simulations can run in parallel.
+- `psdm.fullscale.rescaled_column` (previously private) and
+  `psdm.fullscale.throughput_from_result`: one point of `specific_throughput`.
+
+### Fixed
+
+- Linear-algebra failures inside the ODE solver (e.g. a singular Newton matrix) are raised
+  as `SolverDivergedError` instead of escaping from SciPy.
+
 ## [0.1.0] - 2026-10-14
 
 First release.
@@ -43,5 +69,6 @@ First release.
 - The equilibrium column model (`ecm.py`).
 - `run_all_smart` fouling-factor estimates and `break_type='force'` breakthrough input.
 
-[Unreleased]: https://github.com/zohoMatt/psdm/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/zohoMatt/psdm/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/zohoMatt/psdm/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/zohoMatt/psdm/releases/tag/v0.1.0
