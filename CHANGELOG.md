@@ -15,12 +15,38 @@ All notable changes to this project are documented here. The format follows
   at whole days up to breakthrough, neighbour search on a `K` factor × `1/n` grid). Fed the
   EPA code's own sums of squares it visits the same parameters in the same order and returns
   the same result; end to end it reproduces the EPA result on the reference cases (see
-  `tests/test_fit_epa.py`). The psdm 0.1/0.2 Nelder–Mead search, which was not from the EPA
-  code, remains available as `method="nelder-mead"`; pass it to get the old results.
+  `tests/test_fit_epa.py`).
+- **`fit_surface_diffusivity` is now exactly the EPA `run_psdm_dsfit`** (breaking): the best
+  point of the grid `ds_ref × numpy.linspace(1e-10, 1, 30)`, with the sum of squares at whole
+  time units up to the breakthrough time (`until`, else the `estimate_capacity` estimate)
+  between the linearly interpolated and extrapolated simulated and observed effluent. The
+  psdm refinement step and its `refine` and `refine_maxiter` arguments are gone, and `until`
+  now sets the EPA window instead of cutting observations. `DsFitResult` gained
+  `breakthrough_time`; `surface_diffusivity_max_evaluations(factors)` is the grid size.
+  `ds_ref` is unchanged (the EPA `ds_base` leaves out the molar `K` and tortuosity terms;
+  still open).
+- **`psdm.io.read_excel` handles t = 0 and zero influent like the EPA
+  `process_input_file`** (breaking): a missing t = 0 row is added as zeros (psdm copied the
+  next influent value and extrapolated the effluent), a t = 0 row that only one data type
+  has stays `NaN` for the other, and zero influent concentrations become 0.001.
+- **`psdm.fullscale.specific_throughput` and `throughput_from_result` take the EPA
+  breakthrough time** (breaking): the last solver output time with the effluent below the
+  threshold, not interpolated (psdm interpolated the first exceedance). An effluent that
+  never reaches the threshold now gives the throughput of the whole simulated time instead
+  of `nan`, and one that is never below it raises `ValueError`.
+
+### Removed
+
+- **`fit_freundlich(method="nelder-mead")`** (breaking) and its arguments `n_inv_bounds`,
+  `q_factor_bounds` and `max_evaluations`: the psdm 0.1/0.2 Nelder–Mead search was not in
+  the EPA code. `method` accepts only `"epa"`.
+- **`fit_freundlich(until=...)` with `start="capacity"`** (breaking) now raises: overriding
+  the estimated breakthrough time was a psdm addition. `until` is the EPA `k_data["brk"]` of
+  `start="compound"`.
 
 ### Added
 
-- `fit_freundlich(method=, start=, pm=, num=, des_xn=, search_limit=)` and the `FitResult`
+- `fit_freundlich(start=, pm=, num=, des_xn=, search_limit=)` and the `FitResult`
   fields `method`, `ssq_grid`, `capacity`, `breakthrough_time` and `converged`.
 - A `UserWarning` when `Column.bed_density` differs from mass / bed volume by more than 5 %
   (`psdm.model.BED_DENSITY_TOLERANCE`). The EPA example files trigger it.

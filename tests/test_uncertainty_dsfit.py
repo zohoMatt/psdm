@@ -55,22 +55,38 @@ def ds_data():
     return pd.Series([5.0, 5.0], index=[0.0, 174.0]), eff
 
 
-def test_dsfit_matches_original_epa_grid(addesigns_column, tce, ds_data):
-    """With the upstream reference ds and grid, the same grid point is chosen."""
+def test_dsfit_matches_original_epa_code(addesigns_column, tce, ds_data):
+    """With the upstream reference ds and window, the same grid point and sums of squares."""
     ref = pd.read_csv(REF / "dsfit.csv").iloc[0]
+    ssqs = pd.read_csv(REF / "dsfit_ssqs.csv")
     fit = psdm.fit_surface_diffusivity(
-        addesigns_column, tce, *ds_data, conc_unit="mg/L", ds_ref=ref["ds_base"], refine=False
+        addesigns_column,
+        tce,
+        *ds_data,
+        conc_unit="mg/L",
+        ds_ref=ref["ds_base"],
+        until=174,
+        nr=8,
+        nz=10,
     )
     assert fit.ds == pytest.approx(ref["best_ds"], rel=1e-9)
-    assert len(fit.evaluations) == 30
+    assert fit.breakthrough_time == 174
+    np.testing.assert_allclose(fit.evaluations.index, ssqs["factor"] * ref["ds_base"], rtol=1e-12)
+    # the models differ only numerically (same equations, different solver settings)
+    np.testing.assert_allclose(fit.evaluations.to_numpy(), ssqs["ssq"], rtol=0.02)
+    assert fit.ssq == fit.evaluations.min()
 
 
-def test_dsfit_recovers_true_value(addesigns_column, tce, ds_data):
-    """The synthetic effluent was simulated with ds = 0.3 × the correlation value."""
+def test_dsfit_default_grid_and_window(addesigns_column, tce, ds_data):
+    """Default: EPA grid of 30 factors, window up to the estimated breakthrough time."""
     fit = psdm.fit_surface_diffusivity(addesigns_column, tce, *ds_data, conc_unit="mg/L")
-    assert fit.ds / fit.ds_ref == pytest.approx(0.3, rel=0.02)
+    np.testing.assert_allclose(fit.evaluations.index / fit.ds_ref, np.linspace(1e-10, 1, 30))
+    _, eff = ds_data
+    est = psdm.estimate_capacity(addesigns_column, pd.Series(5.0, eff.index), eff, conc_unit="mg/L")
+    assert fit.breakthrough_time == est.breakthrough_time
     assert fit.compound.ds == fit.ds
     assert fit.ssq == fit.evaluations.min()
+    assert fit.ds == fit.evaluations.idxmin()
 
 
 def test_dsfit_rejects_fouled_water(addesigns_column, tce, ds_data):

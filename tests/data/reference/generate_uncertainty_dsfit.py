@@ -3,8 +3,9 @@
 usage: python generate_uncertainty_dsfit.py <upstream PSDM dir> <output dir>
 
 ``dsfit_effluent.csv`` (synthetic TCE effluent made with ``psdm.simulate`` and
-``ds = 0.3 ds_correlation``) must already be in the output dir. Writes ``uncertainty.csv``
-and ``dsfit.csv``.
+``ds = 0.3 ds_correlation``) must already be in the output dir. Writes ``uncertainty.csv``,
+``dsfit.csv`` and ``dsfit_ssqs.csv`` (the sum of squares of every grid factor, in (mg/L)²,
+with ``k_data["brk"] = 174``).
 """
 
 import contextlib
@@ -87,4 +88,7 @@ eff = pd.read_csv(out / "dsfit_effluent.csv")
 col = make(5e6, np.interp(t, eff["time"], eff["effluent"]) * 1e6)
 _, best_ds, ssqs, _, ds_base = col.run_psdm_dsfit("Test")
 pd.DataFrame({"ds_base": [ds_base], "best_ds": [best_ds]}).to_csv(out / "dsfit.csv", index=False)
+pd.DataFrame({"factor": ssqs.index, "ssq": ssqs.to_numpy(dtype=float) / 1e12}).to_csv(
+    out / "dsfit_ssqs.csv", index=False
+)  # ssq in (mg/L)^2
 print(ds_base, best_ds, best_ds / ds_base)

@@ -38,7 +38,10 @@ class Dataset:
         The adsorber.
     influent, effluent
         Concentrations indexed by time, one column per compound, on a common time grid
-        (gaps filled by linear interpolation).
+        (gaps filled by linear interpolation), as upstream ``process_input_file``: if no data
+        type has a time 0, a t = 0 row of zeros is added; a t = 0 row that only one data
+        type has is left empty (``NaN``) for the other; zero influent concentrations
+        become 0.001.
     properties
         Compound properties (rows include ``MW`` and ``MolarVol``).
     k_data
@@ -185,12 +188,19 @@ def read_excel(
 
     infl = _wide(long, influent_id, names)
     effl = _wide(long, effluent_id, names)
-    index = infl.index.union(effl.index).union(pd.Index([0.0])).astype(float).sort_values()
+    index = infl.index.union(effl.index).astype(float)
+    zero_row = 0.0 not in index
+    index = index.union(pd.Index([0.0])).sort_values()
     index = index[index >= 0]
     index.name = "time"
     influent, effluent = _fill(infl, index), _fill(effl, index)
-    if 0.0 not in infl.index:
-        influent.loc[0.0] = influent.loc[index[1]]
+    # upstream process_input_file never fills t = 0: a missing time 0 gets a row of zeros,
+    # and a t = 0 row that only the other data type has stays empty
+    for filled, raw in [(influent, infl), (effluent, effl)]:
+        for name in names:
+            if 0.0 not in raw.index or np.isnan(raw.loc[0.0, name]):
+                filled.loc[0.0, name] = 0.0 if zero_row else np.nan
+    influent = influent.mask(influent == 0.0, 0.001)  # upstream: zero influent becomes 0.001
 
     properties = sheets[properties_sheet].set_index(sheets[properties_sheet].columns[0])
     missing = [n for n in names if n not in properties.columns]

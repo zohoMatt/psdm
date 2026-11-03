@@ -143,3 +143,21 @@ def test_staggered_bed_interval():
     assert fs.staggered_bed_interval(eff + 20, total_beds=2, beds_per_cycle=1, target=10)[0] == 0
     with pytest.raises(ValueError):
         fs.staggered_bed_interval(eff, total_beds=2, beds_per_cycle=3, target=10)
+
+
+def test_throughput_breakthrough_is_last_time_below(addesigns_column):
+    """Upstream: ``treat_days = results[results < ct].dropna().index[-1]``, no interpolation;
+    an effluent that exceeds the threshold and falls back counts up to the later time."""
+    from types import SimpleNamespace
+
+    effluent = pd.Series([0.0, 1.0, 6.0, np.nan, 3.0, 8.0, 9.0], index=np.arange(7.0))
+    upstream = effluent[effluent < 5.0].dropna().index[-1]
+    res = SimpleNamespace(column=addesigns_column, effluent=effluent.to_frame("TCE"))
+    got = fs.throughput_from_result(res, "TCE", 5.0)
+    col = addesigns_column
+    assert upstream == 4.0
+    assert got == col.flow_rate / 1e3 * upstream * 1440.0 / col.mass
+    # never reached: the whole simulated time; never below: no breakthrough time at all
+    assert fs.throughput_from_result(res, "TCE", 100.0) == pytest.approx(got * 6 / 4)
+    with pytest.raises(ValueError, match="never below"):
+        fs.throughput_from_result(res, "TCE", 0.0)

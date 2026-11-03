@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 import psdm
-from conftest import EXAMPLES
+from conftest import DATA, EXAMPLES
 from psdm.io import read_excel
 
 
@@ -26,6 +26,34 @@ def test_read_excel_fills_gaps():
     assert ds.influent.index.equals(ds.effluent.index)
     assert not ds.influent.isna().any().any() and not ds.effluent.isna().any().any()
     assert ds.influent.loc[10.0, "Trichloroethylene"] == pytest.approx(1500 - 250 * 10 / 25)
+
+
+@pytest.mark.parametrize(
+    ("path", "sheet"),
+    [
+        (EXAMPLES / "Example_TCE.xlsx", "data"),
+        (EXAMPLES / "Example_TCE.xlsx", "data_variable"),
+        (EXAMPLES / "Example_TCE.xlsx", "data_optimize"),
+        (EXAMPLES / "Example_Multi.xlsx", "data"),
+        (DATA / "io_missing_t0.xlsx", "data"),
+        (DATA / "io_missing_t0.xlsx", "data_infl_t0"),
+    ],
+)
+def test_read_excel_matches_original_epa_reader(path, sheet):
+    """Same influent and effluent as upstream ``process_input_file`` (generate_io.py).
+
+    ``io_missing_t0.xlsx`` has no t = 0 row (``data``; upstream adds a row of zeros) or only
+    an influent one (``data_infl_t0``; the effluent at t = 0 stays empty), and zero influent
+    values (upstream sets them to 0.001).
+    """
+    ref = pd.read_csv(DATA / "reference" / "io_process_input_file.csv")
+    ref = ref[(ref["file"] == path.name) & (ref["sheet"] == sheet)]
+    ds = read_excel(path, data_sheet=sheet)
+    for kind, got in [("influent", ds.influent), ("effluent", ds.effluent)]:
+        want = ref[ref["type"] == kind].pivot(index="time", columns="compound")["concentration"]
+        want = want.reindex(columns=got.columns)
+        np.testing.assert_array_equal(got.index.to_numpy(), want.index.to_numpy())
+        np.testing.assert_allclose(got.to_numpy(float), want.to_numpy(float), rtol=1e-12)
 
 
 def test_compound_overrides():
@@ -58,29 +86,6 @@ def test_isotherm_from_batch_data():
     np.testing.assert_allclose(q, [67 / 168, 79.5 / 265])
     with pytest.raises(ValueError, match="unknown isotherm"):
         psdm.fit_isotherm([1, 2, 3], [1, 2, 3], "bet")
-
-
-def test_fit_freundlich_recovers_synthetic_parameters(addesigns_column):
-    true = psdm.Compound("TCE", mw=131.39, molar_volume=102, k=5026.04, n_inv=0.43)
-    influent = pd.Series([50.0, 50.0], index=[0.0, 174.0])
-    kw = {"conc_unit": "mg/L", "nr": 6, "nz": 8}
-    observed = psdm.simulate(addesigns_column, true, influent, **kw)
-    t_obs = np.arange(0, 175, 7.0)
-    effluent = pd.Series(observed(t_obs, "TCE"), index=t_obs)
-
-    start = true.with_(k=true.k * 0.6, n_inv=0.55)
-    fit = psdm.fit_freundlich(
-        addesigns_column, start, influent, effluent, method="nelder-mead", max_evaluations=60, **kw
-    )
-    assert fit.ssq < 1e-2 * psdm.sum_of_squares(
-        psdm.simulate(addesigns_column, start, influent, **kw), effluent
-    )
-    # with a constant influent only the capacity at that concentration is identifiable
-    c_ref = 50_000.0  # ug/L
-    q_fit = fit.compound.k * c_ref**fit.compound.n_inv
-    assert q_fit == pytest.approx(true.k * c_ref**true.n_inv, rel=0.03)
-    assert fit.compound.n_inv == pytest.approx(0.43, abs=0.05)
-    assert len(fit.evaluations) > 1
 
 
 def test_plot_breakthrough(addesigns_column, tce):

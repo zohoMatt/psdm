@@ -270,24 +270,28 @@ def rescaled_column(column: Column, ebct: float) -> Column:
 _rescaled = rescaled_column  # pre-0.2 private name
 
 
-def _first_exceedance(t, c, limit) -> float:
-    """First time the piecewise-linear curve ``(t, c)`` exceeds ``limit`` (``nan`` if never)."""
-    above = np.flatnonzero(c > limit)
-    if len(above) == 0:
-        return np.nan
-    i = above[0]
-    if i == 0:
-        return float(t[0])
-    return float(t[i - 1] + (limit - c[i - 1]) * (t[i] - t[i - 1]) / (c[i] - c[i - 1]))
+def _last_time_below(t, c, limit) -> float:
+    """Last time ``t`` with ``c < limit``, without interpolation.
+
+    Upstream ``specific_throughput``: ``results[results < ct].dropna().index[-1]``.
+    """
+    below = np.flatnonzero(c < limit)
+    if len(below) == 0:
+        raise ValueError("the effluent is never below the threshold")
+    return float(t[below[-1]])
 
 
 def throughput_from_result(
     result: Result, compound: str, threshold: float, *, time_unit: str = "days"
 ) -> float:
-    """Specific throughput (L/g) of ``result`` until ``compound`` first exceeds ``threshold``.
+    """Specific throughput (L/g) of ``result`` up to the breakthrough of ``threshold``.
 
-    ``threshold`` is in the concentration unit of the simulation and ``time_unit`` is the
-    time unit it used. Returns ``nan`` if the threshold is never exceeded. Together with
+    As in the US EPA code, the breakthrough time is the last solver output time at which
+    the effluent of ``compound`` is below ``threshold`` (not interpolated). If the effluent
+    rises above the threshold and falls back below it, that is the later time; if it never
+    reaches the threshold, it is the end of the simulation. ``ValueError`` if the effluent is
+    never below it. ``threshold`` is in the concentration unit of the simulation and
+    ``time_unit`` is the time unit it used. Together with
     :func:`rescaled_column` this is one point of :func:`specific_throughput`::
 
         col = psdm.fullscale.rescaled_column(column, ebct)
@@ -296,7 +300,7 @@ def throughput_from_result(
     """
     col = result.column
     t = result.effluent.index.to_numpy()
-    t_break = _first_exceedance(t, result.effluent[compound].to_numpy(), threshold)
+    t_break = _last_time_below(t, result.effluent[compound].to_numpy(), threshold)
     return col.flow_rate / 1e3 * t_break * units.factor("time", time_unit) / col.mass
 
 
@@ -328,8 +332,10 @@ def specific_throughput(
     ebcts
         Empty-bed contact times to evaluate, min.
     duration
-        Simulated time, in ``time_unit``. Compounds that do not reach ``threshold`` within it
-        get ``nan``.
+        Simulated time, in ``time_unit``. Breakthrough is the last solver time with the
+        effluent below ``threshold`` (see :func:`throughput_from_result`), so a compound
+        that does not reach ``threshold`` within ``duration`` gets the throughput of the
+        whole duration, as in the US EPA code.
     **simulate_kw
         Forwarded to :func:`psdm.simulate`.
 

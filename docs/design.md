@@ -84,18 +84,20 @@ fit = psdm.fit_surface_diffusivity(column, tce, influent["TCE"], effluent, conc_
 fit.ds, fit.ds / fit.ds_ref, fit.evaluations
 ```
 
-`ds = factor × ds_ref` is evaluated on a grid of factors (the EPA default
-`numpy.linspace(1e-10, 1, 30)`), where `ds_ref` is the value from the surface-to-pore
-diffusion flux ratio, and the best point is then refined. The EPA code computed its
-reference without the Freundlich `K` term, so its `ds_base` differs from `ds_ref`.
+As in the EPA `run_psdm_dsfit`, `ds = factor × ds_ref` is evaluated on a grid of factors
+(`numpy.linspace(1e-10, 1, 30)`) and the best grid point is the result; the sum of squares
+is taken at whole days up to the breakthrough time (`until`, or the
+{func}`psdm.estimate_capacity` estimate). `ds_ref` is the value from the surface-to-pore
+diffusion flux ratio. The EPA code computed its reference without the molar `K` and
+tortuosity terms, so its `ds_base` differs from `ds_ref`; pass it as `ds_ref` to reproduce it.
 
 ## Progress and cancelling fits
 
 {func}`psdm.fit_freundlich` and {func}`psdm.fit_surface_diffusivity` accept
 `callback(evaluations, best_ssq)`, called after every simulation. Raise any exception from it
 to stop the fit; the exception reaches the caller unchanged.
-{func}`psdm.fitting.surface_diffusivity_max_evaluations` gives an upper bound on the number of
-simulations of the ds fit, for a progress bar:
+{func}`psdm.fitting.surface_diffusivity_max_evaluations` gives the number of simulations of
+the ds fit, for a progress bar:
 
 ```python
 from psdm.fitting import surface_diffusivity_max_evaluations

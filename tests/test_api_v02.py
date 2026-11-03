@@ -59,19 +59,35 @@ def test_solver_failure_is_specific_and_backward_compatible(addesigns_column, tc
         psdm.simulate(addesigns_column, tce, influent, **tight, **KW)
 
 
-def test_fits_treat_solver_errors_as_failed_trials(addesigns_column, tce, influent, observed):
-    # the start point is fine; failed trials must not abort the search
+def test_fits_treat_solver_errors_as_failed_trials(
+    addesigns_column, tce, influent, observed, monkeypatch
+):
+    # failed trials score 1e20, like upstream run_all_smart, and do not abort the search
+    real = psdm.fitting.simulate
+
+    def failing(column, compound, *args, **kw):
+        if compound.n_inv >= 0.8:
+            raise errors.SolverDivergedError("diverged")
+        return real(column, compound, *args, **kw)
+
+    monkeypatch.setattr(psdm.fitting, "simulate", failing)
     fit = psdm.fit_freundlich(
-        addesigns_column,
-        tce,
-        influent,
-        observed,
-        method="nelder-mead",
-        max_evaluations=10,
-        n_inv_bounds=(0.01, 1.0),
+        addesigns_column, tce, influent, observed, start="compound", until=174, search_limit=2,
         **KW,
-    )
-    assert np.isfinite(fit.ssq)
+    )  # fmt: skip
+    failed = fit.evaluations[fit.evaluations["n_inv"] >= 0.8]
+    assert len(failed) and (failed["ssq"] == 1e20).all()
+    assert np.isfinite(fit.ssq) and fit.compound.n_inv < 0.8
+
+
+def test_until_is_only_for_given_k(addesigns_column, tce, influent, observed):
+    with pytest.raises(ValueError, match="until is only for"):
+        psdm.fit_freundlich(addesigns_column, tce, influent, observed, until=100.0, **KW)
+
+
+def test_nelder_mead_is_gone(addesigns_column, tce, influent, observed):
+    with pytest.raises(ValueError, match="unknown method"):
+        psdm.fit_freundlich(addesigns_column, tce, influent, observed, method="nelder-mead")
 
 
 # --- diagnostics --------------------------------------------------------------------------
@@ -162,8 +178,9 @@ def test_freundlich_callback(addesigns_column, tce, influent, observed):
         start,
         influent,
         observed,
-        method="nelder-mead",
-        max_evaluations=15,
+        start="compound",
+        until=174,
+        search_limit=2,
         callback=rec,
         **KW,
     )
@@ -185,9 +202,8 @@ def test_ds_callback_and_bound(addesigns_column, tce, influent, observed):
     )
     assert len(rec.calls) == len(fit.evaluations)
     _assert_monotone(rec.calls)
-    assert len(rec.calls) <= surface_diffusivity_max_evaluations(np.linspace(0.1, 1, 6))
-    assert surface_diffusivity_max_evaluations() == 30 + 51
-    assert surface_diffusivity_max_evaluations(refine=False) == 30
+    assert len(rec.calls) == surface_diffusivity_max_evaluations(np.linspace(0.1, 1, 6)) == 6
+    assert surface_diffusivity_max_evaluations() == 30
 
 
 @pytest.mark.parametrize("which", ["freundlich", "ds"])
