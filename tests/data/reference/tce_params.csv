@@ -1,0 +1,7 @@
+case,sheet,water,k,n_inv
+variable_organic_free,data_variable,Organic Free,5026.04,0.43
+variable_rhine,data_variable,Rhine,5026.04,0.43
+optimize_capacity_organic_free,data_optimize,Organic Free,22.7501295504137,0.975
+optimize_capacity_rhine,data_optimize,Rhine,3208.3710149248836,0.425
+optimize_given_organic_free,data_optimize,Organic Free,4751.8946482,0.225
+optimize_capacity_55d_organic_free,data_optimize,Organic Free,4874.844485908818,0.2

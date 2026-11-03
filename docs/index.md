@@ -8,7 +8,6 @@ carbon (GAC) contactors, in Python.
 
 getting-started
 guide
-design
 model
 api
 changelog

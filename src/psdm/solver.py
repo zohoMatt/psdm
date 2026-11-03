@@ -22,8 +22,14 @@ from .correlations import film_transfer
 from .errors import InputError, SolverDivergedError, StepSizeTooSmallError
 from .model import Column, Compound
 
-SURFACE_DIFFUSION_FOULED_FACTOR = 1e-10
-"""Surface diffusion is effectively switched off in fouled water (as in the EPA code)."""
+SURFACE_DIFFUSION_OFF_FACTOR = 1e-10
+"""Multiplier on ``ds`` while the tortuosity correlation is on.
+
+AdDesignS switches surface diffusion off there by forcing the SPDFR to ``1e-30``
+(``Kinetic.vb``), which puts ``ds`` near ``1e-40`` cm²/s; scipy's BDF integrator does not
+converge at that scale. The EPA code's ``ds / 1e10`` is used instead: surface diffusion is
+equally negligible and the breakthrough curves match AdDesignS output (see the tests).
+"""
 
 
 @dataclass
@@ -127,13 +133,25 @@ def _build_system(
     nr: int,
     nz: int,
     ne: int,
-    correlation: str,
+    tortuosity_correlation: bool | None,
 ) -> _System:
     names = [c.name for c in comps]
     t_mult = units.factor("time", time_unit)  # -> minutes
     mass_mul = units.factor("concentration", conc_unit)  # -> ug/L
     fouling.water_coefficients(water)  # validate early
     fouled = water != fouling.ORGANIC_FREE
+    tort_corr = fouled if tortuosity_correlation is None else bool(tortuosity_correlation)
+    if tort_corr:
+        # AdDesignS computes Dp and Ds from the correlations while the tortuosity correlation
+        # is on and does not accept user values (Kinetic.vb, Update_Ds_and_Dp_Editability)
+        for c in comps:
+            for attr in ("dp", "ds"):
+                if getattr(c, attr) is not None:
+                    raise InputError(
+                        f"Compound {c.name!r}: {attr} cannot be given while the tortuosity "
+                        "correlation is on",
+                        field="compounds",
+                    )
 
     def vec(attr):
         return np.array([getattr(c, attr) for c in comps], dtype=float)
@@ -161,11 +179,15 @@ def _build_system(
     # --- mass transfer parameters
     difl = properties.liquid_diffusivity(molar_volume, vw)
     sc = vw / (dw * difl)
-    kf = film_transfer(difl, rad, re, sc, ebed, correlation)
-    tortu0 = 1.0 if fouled else column.tortuosity
+    kf = film_transfer(difl, rad, re, sc, ebed, column.shape_factor)
+    # AdDesignS Correlations.vb: Dp = Dl / tau, Ds from the SPDFR; the tortuosity function
+    # returns 1 while the tortuosity correlation is on and surface diffusion is switched off
+    tortu0 = 1.0 if tort_corr else column.tortuosity
     dp = difl / tortu0
     molar_k = k / mw / (1.0 / mw) ** xn  # (umol/g)(L/umol)^(1/n)
     ds = epor * difl * cb0 * column.psdfr / (tortu0 * 1e3 * rhop * molar_k * cb0**xn)
+    if tort_corr:
+        ds = ds * SURFACE_DIFFUSION_OFF_FACTOR
     for i, c in enumerate(comps):
         if c.kf is not None:
             kf[i] = c.kf
@@ -173,8 +195,6 @@ def _build_system(
             dp[i] = c.dp
         if c.ds is not None:
             ds[i] = c.ds
-    if fouled:
-        ds = ds * SURFACE_DIFFUSION_FOULED_FACTOR
     mass_transfer = pd.DataFrame([kf, dp, ds], index=["kf", "dp", "ds"], columns=names)
 
     # --- dimensionless groups
@@ -188,33 +208,34 @@ def _build_system(
     dg1 = 1.0 + dgt
     edd = dgt / dg
     eds = np.maximum(ds * dgs * tau / rad**2, 1e-130)  # surface diffusion modulus
-    edp = dp * tortu0 * dgp * tau / rad**2  # pore diffusion modulus
+    edp = dp * dgp * tau / rad**2  # pore diffusion modulus
     beds = (eds + d * edp) * edd
     bedp = edp * (1.0 - d) * edd
     stdv = kf * (1.0 - ebed) * tau / (ebed * rad) * dgt  # modified Stanton number
     stdv_dg = stdv / dg
     st = kf * (1.0 - ebed) * tau / (ebed * rad)  # Stanton number
-    edp_eff = dp * dgp * tau / rad**2  # pore diffusion modulus with the actual dp
     diagnostics = pd.DataFrame(
-        [st, eds, edp_eff, st / eds, st / edp_eff],
+        [st, eds, edp, st / eds, st / edp],
         index=["St", "Eds", "Edp", "Bi_s", "Bi_p"],
         columns=names,
     )
     tconv = 60.0 / (tau * dg1)  # dimensionless time per minute
 
     # --- time-dependent inputs (time in minutes)
-    b = [fouling.chemical_coefficients(c.fouling_class, c.name) for c in comps]
+    b = [fouling.chemical_coefficients(c.fouling_class) for c in comps]
 
     def time_inputs(t_min):
         c_in = np.array([np.interp(t_min, t_data_min, row) for row in c_rel])
         if fouled:
             mult = np.array([fouling.k_multiplier(t_min, water, bi) for bi in b])
             foul_fac = (1.0 / mult) ** xni
-            tort = fouling.tortuosity(t_min)
         else:
             foul_fac = np.ones(len(comps))
-            tort = column.tortuosity
-        fac = (1.0 / tort - d) / (1.0 - d)
+        if tort_corr:
+            # AdDesignS DIFFUN: FAC = (1/RT - D) / (1 - D), 1 before the tortuosity onset
+            fac = (1.0 / fouling.tortuosity(t_min) - d) / (1.0 - d)
+        else:
+            fac = np.ones(len(comps))
         return c_in, foul_fac, fac
 
     # --- discretisation
@@ -283,7 +304,7 @@ def simulate(
     nr: int = 14,
     nz: int = 19,
     ne: int = 1,
-    correlation: str = "Chern and Chien",
+    tortuosity_correlation: bool | None = None,
     method: str = "BDF",
     rtol: float = 1e-3,
     atol: float = 1e-6,
@@ -309,8 +330,12 @@ def simulate(
     nr, nz, ne
         Radial points, axial points per element, and axial elements. For many competing
         compounds with fouling, ``nz=3`` with ``ne`` of 20–30 is often more robust.
-    correlation
-        Film-transfer correlation, see :data:`psdm.correlations.SHERWOOD`.
+    tortuosity_correlation
+        AdDesignS's time-dependent tortuosity correlation (see
+        :func:`psdm.fouling.tortuosity`). While it is on, the tortuosity is 1, ``ds`` is
+        multiplied by :data:`SURFACE_DIFFUSION_OFF_FACTOR` (surface diffusion off) and
+        ``dp``/``ds`` cannot be given. ``None`` (default) turns it on in fouled water and
+        off in organic-free water.
     method, rtol, atol
         Passed to :func:`scipy.integrate.solve_ivp`.
 
@@ -328,8 +353,8 @@ def simulate(
         and pore solute distribution parameters at the initial influent concentration. They
         are evaluated with the virgin Freundlich ``K`` and the initial tortuosity: in fouled
         water ``K`` and the tortuosity change during the run, which these numbers do not
-        follow. In fouled water ``Ds`` is divided by ``1e10`` and ``Eds`` is floored at
-        ``1e-130`` as in the solver, so ``Bi_s`` is very large.
+        follow. With the tortuosity correlation on, ``Ds`` is divided by ``1e10``
+        and ``Eds`` is floored at ``1e-130`` as in the solver, so ``Bi_s`` is very large.
 
     Raises
     ------
@@ -351,7 +376,7 @@ def simulate(
         nr=nr,
         nz=nz,
         ne=ne,
-        correlation=correlation,
+        tortuosity_correlation=tortuosity_correlation,
     )
 
     options = {}

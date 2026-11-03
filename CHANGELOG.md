@@ -6,7 +6,60 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.3.0] - 2026-11-02
+## [0.4.0] - 2026-11-03
+
+psdm now covers the PSDM of AdDesignS only, and its core follows the AdDesignS source
+(USEPA/Environmental-Technologies-Design-Option-Tool, `VS2019_AdDesignS`). This is the first
+release after 0.2.0: 0.3.0 was never published, and most of what it added is removed again
+here. Upgrading from 0.2.0, read both sections.
+
+### Removed (breaking)
+
+Everything without an AdDesignS counterpart:
+
+- `fit_freundlich`, `fit_surface_diffusivity`, `sum_of_squares`, `FitResult`, `DsFitResult`
+  (`psdm.fitting`); `estimate_capacity`, `CapacityEstimate` (`psdm.capacity`).
+- `model_uncertainty`, `Uncertainty` and `psdm.uncertainty`.
+- `psdm.fullscale` (RSSCT design, specific throughput, replacement intervals, PFAS MCLs and
+  hazard index).
+- `fit_isotherm`, `IsothermFit` and `psdm.isotherms`.
+- The film-transfer correlations other than the AdDesignS one, `psdm.correlations.SHERWOOD`
+  and the `correlation=` argument of `simulate`.
+- The PFAS fouling table (`fouling_class="PFAS"`, `fouling.PFAS`) and the "halogenated alkanes
+  QSPR" class.
+
+### Changed
+
+- Houghton groundwater `a4` is `-1.04e-4`, as in AdDesignS `water_co.txt` (the EPA code has
+  `-7.29e-5`).
+- The pore diffusion modulus is `Edp = Dp Dgp tau / R²` and the tortuosity factor on the pore
+  term is 1 without the tortuosity correlation, as in AdDesignS. The EPA code multiplied `Edp`
+  by the tortuosity again, which changed results for `Column.tortuosity != 1` in organic-free
+  water.
+- The tortuosity correlation is 1 up to 1.008e5 min and `0.334 + 6.61e-6 t` after, as in the
+  AdDesignS `DIFFUN` (previously `max(1, 0.334 + 6.61e-6 t)`).
+- `fouling.chemical_coefficients` takes only the class (no compound name).
+
+### Added
+
+- `simulate(tortuosity_correlation=None | True | False)`: the AdDesignS tortuosity
+  correlation as its own option. `None` keeps the previous behaviour (on in fouled water).
+  While it is on, `Compound.dp`/`ds` raise `InputError`, as AdDesignS does not accept them.
+- `Column.shape_factor` (default 1) multiplies the correlated `kf`, as in AdDesignS.
+- Compound class `"acids"` `(0.65, 0.35)` from AdDesignS `corr_com.txt`.
+
+### Tests
+
+- `tests/test_tce_epa.py` compares `Example_TCE.xlsx` breakthrough curves with time-varying
+  influent against the EPA code: `data_variable` with the `Kdata` values, and `data_optimize`
+  at the K and 1/n where the EPA `run_all_smart` ends (including `1/n = 0.975` and the fit to
+  the first 55 days). Both codes integrate with `rtol=1e-6` there: at the default
+  `rtol=1e-3` each code's own integration error reaches ~0.7 % of C0 and depends on the
+  platform. The largest difference is 0.06 % of the maximum influent concentration
+  (tolerance 0.1 %).
+- The tortuosity now has its own tests: it changes only `Dp` and `Ds`, as in AdDesignS.
+
+## [0.3.0] - 2026-11-02 (not published)
 
 ### Changed
 

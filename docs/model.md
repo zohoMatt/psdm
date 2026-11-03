@@ -64,11 +64,24 @@ $$
 $$
 
 where $a_1 \ldots a_4$ depend on the water and $b_1, b_2$ on the compound class (tables in
-{mod}`psdm.fouling`). In addition, following the EPA code, the pore tortuosity increases with
-time as $\max(1,\ 0.334 + 6.61\times10^{-6}\, t)$ and the surface diffusivity is divided by
-$10^{10}$, i.e. effectively switched off. The parameter tables and these two rules are taken
-from the EPA code, whose comments state that the water/compound-class parameters were edited to
-match AdDesignS; we have not checked them against a primary publication.
+{mod}`psdm.fouling`), taken from the AdDesignS database files `water_co.txt` and
+`corr_com.txt`. The floor of $10^{-3}$ is the `XKTIME` floor of the AdDesignS `DIFFUN`.
+
+**Tortuosity correlation.** AdDesignS offers a time-dependent tortuosity correlation, on by
+default in fouled water here (`tortuosity_correlation=`). While it is on, the tortuosity used
+for $D_p$ and $D_s$ is 1, user values of $D_p$ and $D_s$ are not accepted, surface diffusion is
+switched off, and the pore-diffusion term is multiplied by
+
+$$
+F = \frac{1/\tau(t) - D}{1 - D}, \qquad
+\tau(t) = \begin{cases} 1 & t \le 1.008\times10^5 \text{ min (70 d)} \\
+0.334 + 6.61\times10^{-6}\, t & \text{otherwise} \end{cases}
+$$
+
+with $D = D_s/D_p$ (AdDesignS `DIFFUN`, `FAC`). AdDesignS switches surface diffusion off by
+forcing the SPDFR to $10^{-30}$. That makes $D_s \approx 10^{-40}$ cm²/s, where scipy's BDF
+integrator does not converge, so psdm divides $D_s$ by $10^{10}$ instead, as the EPA code
+does. Surface diffusion is negligible either way, and the curves match the AdDesignS output.
 
 ## Numerical method
 
@@ -87,16 +100,17 @@ test suite against a finite-difference Jacobian).
   above the tabulated 1.002 cP.
 - **Liquid diffusivity**: Hayduk & Laudie (1974),
   $D_l = 13.26\times10^{-5} / (\mu^{1.14} V_b^{0.589})$ with $\mu$ in cP and $V_b$ in cm³/mol.
-- **Pore diffusivity**: $D_p = D_l / \tau$ (organic-free water), or user-supplied.
+- **Pore diffusivity**: $D_p = D_l / \tau$, or user-supplied. The pore diffusion modulus is
+  $E_{dp} = D_p D_{gp} \tau_f / R^2$ as in AdDesignS (the EPA code multiplies it by $\tau$
+  again, which differs from AdDesignS when $\tau \ne 1$).
 - **Surface diffusivity**: from the surface-to-pore diffusion flux ratio $S$ (parameter
   `psdfr`, the name used in the EPA code):
   $D_s = S\, \varepsilon_p D_p C_0 / (\rho_p q_0)$, where $q_0$ is the equilibrium loading at
   the influent concentration $C_0$; or user-supplied.
-- **Film transfer** $k_f$: by default the correlation the EPA code labels "Chern and Chien"
-  (a modified Gnielinski form,
-  $Sh = [1 + 1.5(1-\varepsilon)]\,(2 + 0.644\,Re^{1/2} Sc^{1/3})$); other options are in
-  {data}`psdm.correlations.SHERWOOD`. We have not verified the attribution of this form to a
-  specific Chern & Chien paper.
+- **Film transfer** $k_f$: the AdDesignS liquid-phase correlation (labelled "Gnielinski" in
+  AdDesignS and "Chern and Chien" in the EPA code),
+  $k_f = SF\,[1 + 1.5(1-\varepsilon)]\,(D_l/2R)\,(2 + 0.644\,Re^{1/2} Sc^{1/3})$, with the
+  particle shape factor $SF$ (`Column.shape_factor`, default 1).
 
 ## References
 
@@ -124,7 +138,3 @@ Software:
   Adsorption Design Software, Michigan Technological University.
 - US EPA, Water Treatment Models, PSDM:
   <https://github.com/USEPA/Water_Treatment_Models/tree/3f514c2/PSDM>.
-
-The PFAS-specific fouling coefficients in {data}`psdm.fouling.PFAS` come from the EPA code,
-whose comment attributes them to a Burkhardt et al. (2020) manuscript "submitted to AWWA Water
-Science"; we have not located that publication.

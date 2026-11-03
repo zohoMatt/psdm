@@ -9,10 +9,13 @@ adsorbers, as a small, tested and documented Python package.
 
 - Multi-component competitive adsorption (ideal adsorbed solution theory, Freundlich isotherms)
 - Film, pore and surface diffusion with built-in correlations or user-supplied coefficients
-- Natural organic matter fouling for the AdDesignS water types and compound classes, including PFAS
+- Natural organic matter fouling and the time-dependent tortuosity correlation of AdDesignS
 - Time-varying influent, any time / concentration / flow units
-- Fitting Freundlich `K` and `1/n` to column data; batch isotherm fitting
 - Reader for the US EPA PSDM Excel input template
+
+psdm covers the PSDM of AdDesignS only. The fitting, capacity-estimation, uncertainty and
+full-scale/RSSCT design tools of the EPA package have no AdDesignS counterpart and were
+removed in 0.4.0.
 
 ## Installation
 
@@ -69,7 +72,14 @@ reproduces the original's results.
 - **Against AdDesignS.** For the 7 single-compound cases with AdDesignS output, psdm stays within
   0.57 % of C0 of AdDesignS. The original EPA code stays within 0.62 %.
 - **Test suite.** The tests check psdm against reference curves generated with the EPA code and
-  against the AdDesignS output, with a tolerance of 0.5 % of C0.
+  against the AdDesignS output, with a tolerance of 0.5 % of C0. They include six
+  `Example_TCE.xlsx` curves with time-varying influent and measured effluent, four of them at
+  the K and 1/n where the EPA fitter `run_all_smart` ends. Both codes integrate these with
+  `rtol=1e-6`; the largest difference is 0.06 % of C0.
+- **Where psdm follows AdDesignS instead of the EPA code.** The pore diffusion modulus with a
+  tortuosity other than 1, the Houghton water coefficient `a4`, and the exact onset of the
+  tortuosity correlation; see the [changelog](CHANGELOG.md) for 0.4.0. None of the cases
+  above is affected.
 
 The case-by-case comparison, with overlaid breakthrough curves, is in
 [`benchmarks/report.html`](benchmarks/report.html) (download it and open it in a browser). It

@@ -12,17 +12,25 @@ uv run --group docs sphinx-build -W -b html docs docs/_build/html   # docs
 
 ## Reference data
 
-`tests/data/reference/*.csv` are breakthrough curves computed with the original US EPA code
+`tests/data/reference/*.csv` are computed with the original US EPA code
 (`Water_Treatment_Models` commit `3f514c2`). To regenerate them, check out that repository and
-run
+run the generator scripts:
+
+| script | output | used by |
+|---|---|---|
+| `generate.py` | `addesigns_single.csv`, `multi_*.csv` | `tests/test_solver.py` |
+| `generate_io.py` | `io_process_input_file.csv`, `../io_missing_t0.xlsx` | `tests/test_io_plotting.py` |
+| `generate_tce.py` | `tce_curves.csv`, `tce_params.csv` | `tests/test_tce_epa.py` |
 
 ```bash
-uv run --no-project --with numpy --with scipy --with pandas --with openpyxl --with matplotlib \
+uv run --no-project --with numpy --with scipy --with "pandas<3" --with openpyxl --with matplotlib \
     python tests/data/reference/generate.py <Water_Treatment_Models>/PSDM tests/data/reference
 ```
 
-`tests/data/addesigns_test.xlsx` holds AdDesignS output for the same case and is the
-independent check.
+(`generate_io.py` also takes the `examples/` folder as a third argument.)
+
+`tests/data/addesigns_test.xlsx` holds AdDesignS output for the single-compound cases and is
+the independent check.
 
 ## Releasing
 

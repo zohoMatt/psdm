@@ -36,14 +36,16 @@ class Column:
         Particle void fraction ``epor``.
     bed_density
         Bulk (apparent bed) density ``rhof``, g/mL. Not used by the model, which works from
-        ``mass`` and the bed volume; only the mass perturbation of
-        :func:`psdm.model_uncertainty` uses it. A warning is issued when it differs from
-        ``mass / bed_volume`` by more than :data:`BED_DENSITY_TOLERANCE`.
+        ``mass`` and the bed volume; it is only checked. A warning is issued when it differs
+        from ``mass / bed_volume`` by more than :data:`BED_DENSITY_TOLERANCE`.
     tortuosity
-        Pore tortuosity used in organic-free water.
+        Pore tortuosity, used when the time-dependent tortuosity correlation is off.
     psdfr
         Surface-to-pore diffusion flux ratio (SPDFR) used to estimate the surface diffusivity:
         ``ds = psdfr * epor * dp * C0 / (rhop * q0)``. The name follows the EPA code.
+    shape_factor
+        Particle shape factor; multiplies the film transfer coefficient from the correlation,
+        as in AdDesignS.
     name
         Label for the adsorbent / column.
     """
@@ -58,6 +60,7 @@ class Column:
     bed_density: float | None = None
     tortuosity: float = 1.0
     psdfr: float = 5.0
+    shape_factor: float = 1.0
     name: str = "column"
 
     def __post_init__(self):
@@ -70,6 +73,7 @@ class Column:
             "particle_density",
             "tortuosity",
             "psdfr",
+            "shape_factor",
         ):
             if not getattr(self, attr) > 0:
                 raise ValueError(f"Column.{attr} must be positive, got {getattr(self, attr)!r}")
@@ -85,10 +89,7 @@ class Column:
             if abs(self.bed_density / packed - 1) > BED_DENSITY_TOLERANCE:
                 warnings.warn(
                     f"Column {self.name!r}: bed_density {self.bed_density:.3g} g/mL differs from "
-                    f"mass / bed volume = {packed:.3g} g/mL. The model uses mass and volume; "
-                    "bed_density only matters for the mass perturbation of "
-                    "psdm.model_uncertainty, where the bed lengthens only once the mass "
-                    "exceeds bed_density times the volume.",
+                    f"mass / bed volume = {packed:.3g} g/mL. The model uses mass and volume.",
                     UserWarning,
                     stacklevel=3,
                 )

@@ -103,7 +103,6 @@ def test_more_capacity_delays_breakthrough(addesigns_column, tce):
     ("kwargs", "match"),
     [
         ({"water": "Lake"}, "water type"),
-        ({"correlation": "nope"}, "correlation"),
         ({"conc_unit": "furlongs"}, "concentration unit"),
     ],
 )
@@ -120,3 +119,33 @@ def test_influent_validation(addesigns_column, tce):
         psdm.simulate(addesigns_column, tce, pd.DataFrame({"PCE": [1.0, 1.0]}, index=[0, 1]))
     with pytest.raises(ValueError, match="duplicate"):
         psdm.simulate(addesigns_column, [tce, tce], pd.DataFrame({"TCE": [1.0, 1.0]}))
+
+
+def test_tortuosity_correlation_follows_addesigns(addesigns_column, tce):
+    infl = pd.Series([50.0, 50.0], index=[0.0, 100.0])
+    col = addesigns_column.with_(tortuosity=2.0)
+    off = psdm.simulate(col, tce, infl, conc_unit="mg/L", nr=6, nz=8)
+    assert off.mass_transfer["TCE"]["dp"] == pytest.approx(
+        psdm.properties.liquid_diffusivity(102, psdm.properties.water_viscosity(20)) / 2.0
+    )
+    on = psdm.simulate(col, tce, infl, conc_unit="mg/L", nr=6, nz=8, tortuosity_correlation=True)
+    # tortuosity 1 instead of 2 and surface diffusion off: ds x 2 x 1e-10
+    assert on.mass_transfer["TCE"]["ds"] == pytest.approx(
+        off.mass_transfer["TCE"]["ds"] * 2.0 * 1e-10
+    )
+    with pytest.raises(psdm.errors.InputError, match="tortuosity correlation"):
+        psdm.simulate(col, tce.with_(ds=1e-9), infl, water="Rhine", conc_unit="mg/L")
+    # fouled water without the correlation keeps the SPDFR surface diffusivity
+    rh = psdm.simulate(
+        col, tce, infl, water="Rhine", conc_unit="mg/L", nr=6, nz=8, tortuosity_correlation=False
+    )
+    assert rh.mass_transfer["TCE"]["ds"] == pytest.approx(off.mass_transfer["TCE"]["ds"])
+
+
+def test_shape_factor_scales_kf(addesigns_column, tce):
+    infl = pd.Series([50.0, 50.0], index=[0.0, 50.0])
+    a = psdm.simulate(addesigns_column, tce, infl, conc_unit="mg/L", nr=6, nz=8)
+    b = psdm.simulate(
+        addesigns_column.with_(shape_factor=0.8), tce, infl, conc_unit="mg/L", nr=6, nz=8
+    )
+    assert b.mass_transfer["TCE"]["kf"] == pytest.approx(0.8 * a.mass_transfer["TCE"]["kf"])
