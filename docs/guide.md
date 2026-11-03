@@ -66,6 +66,9 @@ against it (`tests/test_fit_epa.py`):
   (0.2–1.0 in steps of 0.025), from `1/n` = 0.2, 0.4, … 1.0 towards lower sums of squares.
 
 The result is a grid node, possibly on the grid edge; `fit.ssq_grid` shows every visited node.
+The search compares sums of squares node by node, so when two nodes are nearly tied a tiny
+numerical difference (another platform, solver tolerance, or the EPA code itself) can lead it
+to a neighbouring end point; this is a property of the EPA algorithm.
 With a constant influent concentration only the capacity at that concentration is well
 determined, not `1/n` and `K` individually — use isotherm data or several concentrations to
 pin down `1/n`.
