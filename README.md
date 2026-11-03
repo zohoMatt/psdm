@@ -9,10 +9,13 @@ adsorbers, as a small, tested and documented Python package.
 
 - Multi-component competitive adsorption (ideal adsorbed solution theory, Freundlich isotherms)
 - Film, pore and surface diffusion with built-in correlations or user-supplied coefficients
-- Natural organic matter fouling for the AdDesignS water types and compound classes, including PFAS
+- Natural organic matter fouling and the time-dependent tortuosity correlation of AdDesignS
 - Time-varying influent, any time / concentration / flow units
-- Fitting Freundlich `K` and `1/n` to column data; batch isotherm fitting
 - Reader for the US EPA PSDM Excel input template
+
+psdm covers the PSDM of AdDesignS only. The fitting, capacity-estimation, uncertainty and
+full-scale/RSSCT design tools of the EPA package have no AdDesignS counterpart and were
+removed in 0.4.0.
 
 ## Installation
 

@@ -6,6 +6,46 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-03
+
+psdm now covers the PSDM of AdDesignS only, and its core follows the AdDesignS source
+(USEPA/Environmental-Technologies-Design-Option-Tool, `VS2019_AdDesignS`).
+
+### Removed (breaking)
+
+Everything without an AdDesignS counterpart:
+
+- `fit_freundlich`, `fit_surface_diffusivity`, `sum_of_squares`, `FitResult`, `DsFitResult`
+  (`psdm.fitting`); `estimate_capacity`, `CapacityEstimate` (`psdm.capacity`).
+- `model_uncertainty`, `Uncertainty` and `psdm.uncertainty`.
+- `psdm.fullscale` (RSSCT design, specific throughput, replacement intervals, PFAS MCLs and
+  hazard index).
+- `fit_isotherm`, `IsothermFit` and `psdm.isotherms`.
+- The film-transfer correlations other than the AdDesignS one, `psdm.correlations.SHERWOOD`
+  and the `correlation=` argument of `simulate`.
+- The PFAS fouling table (`fouling_class="PFAS"`, `fouling.PFAS`) and the "halogenated alkanes
+  QSPR" class.
+
+### Changed
+
+- Houghton groundwater `a4` is `-1.04e-4`, as in AdDesignS `water_co.txt` (the EPA code has
+  `-7.29e-5`).
+- The pore diffusion modulus is `Edp = Dp Dgp tau / R²` and the tortuosity factor on the pore
+  term is 1 without the tortuosity correlation, as in AdDesignS. The EPA code multiplied `Edp`
+  by the tortuosity again, which changed results for `Column.tortuosity != 1` in organic-free
+  water.
+- The tortuosity correlation is 1 up to 1.008e5 min and `0.334 + 6.61e-6 t` after, as in the
+  AdDesignS `DIFFUN` (previously `max(1, 0.334 + 6.61e-6 t)`).
+- `fouling.chemical_coefficients` takes only the class (no compound name).
+
+### Added
+
+- `simulate(tortuosity_correlation=None | True | False)`: the AdDesignS tortuosity
+  correlation as its own option. `None` keeps the previous behaviour (on in fouled water).
+  While it is on, `Compound.dp`/`ds` raise `InputError`, as AdDesignS does not accept them.
+- `Column.shape_factor` (default 1) multiplies the correlated `kf`, as in AdDesignS.
+- Compound class `"acids"` `(0.65, 0.35)` from AdDesignS `corr_com.txt`.
+
 ## [0.3.0] - 2026-11-02
 
 ### Changed

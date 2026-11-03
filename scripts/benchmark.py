@@ -976,7 +976,7 @@ but still depend on the BLAS and scipy version.</li>
 <li>Upstream <code>run_psdm_kfit</code> also computes a sum of squares against (empty) effluent data and copies
 DataFrames; that overhead is part of its normal API and is counted. The <em>solve_ivp</em> column isolates the
 integrator for a like-for-like comparison.</li>
-<li>Fitting routines (K/1/n search, ds fitting), capacity and uncertainty tools were not timed. Upstream's fitting
+<li>Only simulation is timed; psdm 0.4 has no fitting, capacity or uncertainty tools. Upstream's fitting
 loops call <code>run_psdm</code> many times, so the per-run setup cost above would multiply there.</li>
 <li>Agreement with upstream is not agreement with reality; the only external reference here is AdDesignS.</li>
 </ul>

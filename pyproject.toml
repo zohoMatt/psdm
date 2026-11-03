@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Matt Zuo" }]
 requires-python = ">=3.10"
-keywords = ["adsorption", "activated carbon", "GAC", "PSDM", "water treatment", "PFAS"]
+keywords = ["adsorption", "activated carbon", "GAC", "PSDM", "water treatment", "AdDesignS"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",

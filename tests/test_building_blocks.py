@@ -24,27 +24,35 @@ def test_water_properties():
     assert properties.water_density(20) == pytest.approx(0.9982, rel=1e-3)
 
 
-def test_correlations_are_positive():
-    for name in correlations.SHERWOOD:
-        kf = correlations.film_transfer(1e-5, 0.05, 2.0, 1000.0, 0.4, name)
-        assert np.all(np.asarray(kf) > 0), name
-
-
-def test_ohashi_regimes_are_continuous_enough():
-    sh = correlations.SHERWOOD["Ohashi et al"]
-    assert sh(np.array([1.0, 50.0, 1000.0]), 1000.0, 0.4).shape == (3,)
+def test_film_transfer_matches_addesigns_formula():
+    # AdDesignS Correlations.vb, function kf (liquid phase)
+    dl, rad, re, sc, eb, sf = 1e-5, 0.05, 2.0, 1000.0, 0.4, 0.8
+    expected = (1 + 1.5 * (1 - eb)) * sf * dl / (2 * rad) * (2 + 0.644 * re**0.5 * sc ** (1 / 3))
+    assert correlations.film_transfer(dl, rad, re, sc, eb, sf) == pytest.approx(expected)
 
 
 def test_fouling():
     assert fouling.k_multiplier(0, "Organic Free", (1.0, 0.0)) == pytest.approx(1)
     m = fouling.k_multiplier(np.array([0, 1e5, 1e6]), "Rhine", (0.59, 0.41))
     assert m[0] == pytest.approx(1) and np.all(np.diff(m) < 0)
-    assert fouling.chemical_coefficients("PFAS", "PFOA") == fouling.PFAS["PFOA"]
-    assert fouling.chemical_coefficients("PFAS", "unknown") == fouling.PFAS_AVERAGE
     assert fouling.chemical_coefficients((0.5, 0.5)) == (0.5, 0.5)
-    assert fouling.tortuosity(0) == 1
     with pytest.raises(ValueError):
         fouling.chemical_coefficients("unobtainium")
+
+
+def test_fouling_tables_match_addesigns_database():
+    # AdDesignS bin/dbase/water_co.txt and corr_com.txt
+    assert fouling.WATER["Houghton"] == (0.66, -1.55e-7, 0.34, -1.04e-4)
+    assert fouling.WATER["Portage"] == (0.51, -9.21e-7, 0.49, -2.8e-5)
+    assert fouling.CHEMICAL["acids"] == (0.65, 0.35)
+    assert len(fouling.WATER) == 6 and len(fouling.CHEMICAL) == 10
+
+
+def test_tortuosity_correlation_onset():
+    # AdDesignS DIFFUN: 1 until t > 1.008e5 min, then 0.334 + 6.61e-6 t
+    t = np.array([0.0, 1.0076e5, 1.008e5, 1.0081e5, 2e5])
+    expected = [1.0, 1.0, 1.0, 0.334 + 6.61e-6 * 1.0081e5, 0.334 + 6.61e-6 * 2e5]
+    np.testing.assert_allclose(fouling.tortuosity(t), expected)
 
 
 @pytest.mark.parametrize("ne", [1, 3])
@@ -77,7 +85,7 @@ def test_jacobian_sparsity_covers_numerical_jacobian(addesigns_column):
         nr=4,
         nz=5,
         ne=2,
-        correlation="Chern and Chien",
+        tortuosity_correlation=None,
     )
     pattern = system.sparsity().toarray()
 

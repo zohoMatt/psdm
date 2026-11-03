@@ -64,30 +64,6 @@ def test_compound_overrides():
     assert tce.k == 100.0
 
 
-@pytest.mark.parametrize(
-    ("model", "func", "true"),
-    [
-        ("freundlich", psdm.isotherms.freundlich, (12.0, 0.45)),
-        ("langmuir", psdm.isotherms.langmuir, (0.2, 40.0)),
-        ("Redlich Peterson", psdm.isotherms.redlich_peterson, (5.0, 2.0, 0.8)),
-    ],
-)
-def test_isotherm_fit_recovers_parameters(model, func, true):
-    ce = np.geomspace(0.1, 100, 12)
-    fit = psdm.fit_isotherm(ce, func(ce, *true), model)
-    np.testing.assert_allclose(list(fit.params.values()), true, rtol=1e-4)
-    assert fit.r2 == pytest.approx(1.0)
-    conf, pred = fit.bands(ce)
-    assert np.all(pred >= conf)
-
-
-def test_isotherm_from_batch_data():
-    q = psdm.isotherms.batch_loading([100, 100], [33, 20.5], [168, 265], volume=1.0)
-    np.testing.assert_allclose(q, [67 / 168, 79.5 / 265])
-    with pytest.raises(ValueError, match="unknown isotherm"):
-        psdm.fit_isotherm([1, 2, 3], [1, 2, 3], "bet")
-
-
 def test_plot_breakthrough(addesigns_column, tce):
     import matplotlib
 
