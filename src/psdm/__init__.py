@@ -8,7 +8,7 @@ from .model import Column, Compound
 from .solver import Result, simulate
 from .uncertainty import Uncertainty, model_uncertainty
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "CapacityEstimate",

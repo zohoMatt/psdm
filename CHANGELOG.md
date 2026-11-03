@@ -6,6 +6,31 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+### Changed
+
+- **`fit_freundlich` is now the EPA fitter.** The default `method="epa"` is a step-by-step
+  port of `PSDM.run_all_smart` (start from the mass-balance capacity estimate, sum of squares
+  at whole days up to breakthrough, neighbour search on a `K` factor × `1/n` grid). Fed the
+  EPA code's own sums of squares it visits the same parameters in the same order and returns
+  the same result; end to end it reproduces the EPA result on the reference cases (see
+  `tests/test_fit_epa.py`). The psdm 0.1/0.2 Nelder–Mead search, which was not from the EPA
+  code, remains available as `method="nelder-mead"`; pass it to get the old results.
+
+### Added
+
+- `fit_freundlich(method=, start=, pm=, num=, des_xn=, search_limit=)` and the `FitResult`
+  fields `method`, `ssq_grid`, `capacity`, `breakthrough_time` and `converged`.
+- A `UserWarning` when `Column.bed_density` differs from mass / bed volume by more than 5 %
+  (`psdm.model.BED_DENSITY_TOLERANCE`). The EPA example files trigger it.
+
+### Fixed
+
+- The documentation of the `capacity` perturbation of `model_uncertainty`: as in the EPA
+  code, `capacity+` raises `K` and lowers `1/n`, which *lowers* the capacity above about
+  9 ug/L. Behaviour is unchanged.
+
 ## [0.2.0] - 2026-10-30
 
 All additions are backward compatible: 0.1.0 signatures are unchanged and results are
@@ -67,8 +92,10 @@ First release.
 
 - Lead–lag configurations (`lead_lag_class.py`, needs the `ixpy` package).
 - The equilibrium column model (`ecm.py`).
-- `run_all_smart` fouling-factor estimates and `break_type='force'` breakthrough input.
+- `run_all` / `run_all_MP` (staged and brute-force grid fitting) and `break_type='force'`
+  breakthrough input.
 
-[Unreleased]: https://github.com/zohoMatt/psdm/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/zohoMatt/psdm/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/zohoMatt/psdm/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/zohoMatt/psdm/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/zohoMatt/psdm/releases/tag/v0.1.0

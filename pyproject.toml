@@ -62,6 +62,7 @@ exclude = ["/.github", "/docs/_build"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = ["ignore:Column .*bed_density:UserWarning"]
 
 [tool.ruff]
 line-length = 100

@@ -9,6 +9,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize, minimize_scalar
 
+from . import fouling, units
+from .capacity import CapacityEstimate, _interp, estimate_capacity
 from .fouling import ORGANIC_FREE
 from .model import Column, Compound
 from .solver import Result, simulate
@@ -78,16 +80,385 @@ class FitResult:
     result
         Simulation at the optimum.
     evaluations
-        Every evaluated ``(k, n_inv, ssq)``.
+        Every simulated ``(k, n_inv, ssq)``, in order.
+    method
+        ``"epa"`` or ``"nelder-mead"``.
+    ssq_grid
+        ``method="epa"`` only: the search grid of the EPA algorithm (index ``K`` factor,
+        columns ``1/n``) with the sum of squares of every visited node, ``NaN`` elsewhere.
+    capacity
+        ``method="epa"`` with ``start="capacity"`` only: the mass-balance estimate the search
+        started from.
+    breakthrough_time
+        ``method="epa"`` only: the end of the sum-of-squares window.
+    converged
+        ``method="epa"``: ``False`` if the search stopped at ``search_limit``.
+        ``method="nelder-mead"``: ``False`` if it stopped at ``max_evaluations``.
     """
 
     compound: Compound
     ssq: float
     result: Result
     evaluations: pd.DataFrame
+    method: str = "nelder-mead"
+    ssq_grid: pd.DataFrame | None = None
+    capacity: CapacityEstimate | None = None
+    breakthrough_time: float | None = None
+    converged: bool = True
+
+
+FIT_METHODS = ("epa", "nelder-mead")
+"""Search methods of :func:`fit_freundlich`."""
+
+
+class _Replay(Exception):
+    pass
+
+
+_EPA_FAILED = 1e20  # upstream run_all_smart's ssq for a failed simulation
+_EPA_START_N_INV = 0.45
+_EPA_MAX_DAYS = 2000.0
+_EPA_K_BY_XN = np.arange(0.15, 1.001, 0.01)
 
 
 def fit_freundlich(
+    column: Column,
+    compound: Compound,
+    influent: pd.Series | pd.DataFrame,
+    effluent: pd.Series,
+    *,
+    method: str = "epa",
+    start: str = "capacity",
+    pm: float = 10.0,
+    num: int = 11,
+    des_xn: float = 0.025,
+    search_limit: int = 50,
+    n_inv_bounds: tuple[float, float] = (0.15, 1.0),
+    q_factor_bounds: tuple[float, float] = (0.1, 10.0),
+    until: float | None = None,
+    max_evaluations: int = 200,
+    callback: Callback | None = None,
+    **simulate_kw,
+) -> FitResult:
+    """Fit Freundlich ``K`` and ``1/n`` of one compound to observed breakthrough.
+
+    ``method="epa"`` (default) is ``PSDM.run_all_smart`` of the US EPA code, ported step by
+    step and checked against it (same sequence of trial parameters and the same result):
+
+    1. ``start="capacity"`` (EPA without ``k_data``): a mass balance on the data
+       (:func:`psdm.estimate_capacity`) gives the loading ``q`` and breakthrough time
+       ``t_b``. The base ``K`` for each ``1/n`` keeps ``q`` at the mean influent
+       concentration, and the ``K`` factor starts at the inverse mean fouling reduction of
+       ``K`` up to ``t_b`` (1 in organic-free water).
+       ``start="compound"`` (EPA with ``k_data``): the base ``K`` is ``compound.k`` for every
+       ``1/n``, the factor starts at 1, and ``until`` is ``t_b`` (required; EPA
+       ``k_data["brk"]``).
+    2. The sum of squares is taken at whole time units ``0, 1, …, t_b − 1`` between the
+       simulated effluent and the observations, both linearly interpolated and extrapolated.
+    3. The search grid is ``K`` factor from ``1 − pm %`` to ``1 + pm %`` of the start in
+       ``num`` steps each way, by ``1/n`` from 0.2 to 1.0 in steps of ``des_xn``. From
+       ``1/n = 0.45`` it tries ``1/n`` = 0.2, 0.4, 0.6, 0.8 and 1.0, then repeatedly evaluates
+       the four neighbours of the current node and moves towards lower sums of squares, until
+       the centre is the best node, it cannot move, or ``search_limit`` loops have run.
+
+    Like the EPA code, the result is a grid node and may lie on the grid edge (``1/n`` of 0.2
+    or 1.0, or the ``K`` factor at ``1 ± pm %``); check :attr:`FitResult.ssq_grid`.
+
+    ``method="nelder-mead"`` is the bounded Nelder–Mead search of psdm 0.1/0.2 (not in the EPA
+    code). It uses ``n_inv_bounds``, ``q_factor_bounds``, ``until`` and ``max_evaluations``
+    and starts from ``compound``.
+
+    Parameters
+    ----------
+    column, compound, influent
+        As for :func:`psdm.simulate`.
+    effluent
+        Observed effluent for ``compound``, indexed by time.
+    method
+        ``"epa"`` or ``"nelder-mead"``.
+    start
+        ``method="epa"`` only: ``"capacity"`` or ``"compound"``, see above.
+    pm, num, des_xn, search_limit
+        ``method="epa"`` only: the EPA ``run_all_smart`` arguments (``pm`` in percent).
+    n_inv_bounds, q_factor_bounds, max_evaluations
+        ``method="nelder-mead"`` only.
+    until
+        ``method="epa"``: end of the sum-of-squares window. With ``start="capacity"`` it
+        replaces the estimated breakthrough time, which is a psdm addition; leave it ``None``
+        for the EPA behaviour. ``method="nelder-mead"``: only fit observations at or before
+        this time.
+    callback
+        Progress callback ``callback(evaluations, best_ssq)``, see :data:`Callback`. Raise
+        from it to cancel the fit.
+    **simulate_kw
+        Forwarded to :func:`psdm.simulate` (``water``, ``time_unit``, ``conc_unit``, ...).
+    """
+    if method == "nelder-mead":
+        return _fit_nelder_mead(
+            column,
+            compound,
+            influent,
+            effluent,
+            n_inv_bounds=n_inv_bounds,
+            q_factor_bounds=q_factor_bounds,
+            until=until,
+            max_evaluations=max_evaluations,
+            callback=callback,
+            **simulate_kw,
+        )
+    if method != "epa":
+        raise ValueError(f"unknown method {method!r}; expected one of {FIT_METHODS}")
+    return _fit_epa_smart(
+        column,
+        compound,
+        influent,
+        effluent,
+        start=start,
+        pm=pm,
+        num=num,
+        des_xn=des_xn,
+        search_limit=search_limit,
+        until=until,
+        callback=callback,
+        **simulate_kw,
+    )
+
+
+def _epa_fouling_factor(duration: float, brk: float, compound: Compound, simulate_kw) -> float:
+    """Upstream ``foul_mult_est``: 1 / mean ``K`` multiplier at whole days ``0 … brk - 1``.
+
+    Evaluated, like upstream, on its 500-point interpolation table of the multiplier.
+    """
+    water = simulate_kw.get("water", ORGANIC_FREE)
+    t_mult = units.factor("time", simulate_kw.get("time_unit", "days"))
+    b = fouling.chemical_coefficients(compound.fouling_class, compound.name)
+    table_t = np.linspace(0.0, max(_EPA_MAX_DAYS, duration) * t_mult, 500)
+    table = fouling.k_multiplier(table_t, water, b)
+    times = np.arange(brk) * t_mult
+    if len(times) == 0:
+        return 1.25  # upstream fallback for a NaN estimate
+    factor_ = float(1.0 / np.mean(_interp(times, table_t, table)))
+    return factor_ if np.isfinite(factor_) else 1.25
+
+
+def _fit_epa_smart(
+    column: Column,
+    compound: Compound,
+    influent: pd.Series | pd.DataFrame,
+    effluent: pd.Series,
+    *,
+    start: str,
+    pm: float,
+    num: int,
+    des_xn: float,
+    search_limit: int,
+    until: float | None,
+    callback: Callback | None,
+    _ssq_fn: Callable[[float, float], float] | None = None,
+    **simulate_kw,
+) -> FitResult:
+    """Port of ``PSDM.run_all_smart`` (US EPA PSDM, commit 3f514c2) for one compound.
+
+    ``_ssq_fn(k, n_inv)`` replaces the simulation (tests replay upstream sums of squares).
+    """
+    infl = influent[compound.name] if isinstance(influent, pd.DataFrame) else influent
+    infl_frame = infl.to_frame(compound.name)
+    obs = effluent.dropna()
+    obs_t, obs_c = obs.index.to_numpy(dtype=float), obs.to_numpy(dtype=float)
+    progress = _Progress(callback)
+    rows: list[tuple[float, float, float]] = []
+
+    capacity = None
+    if start == "capacity":
+        aligned = pd.Series(np.interp(obs_t, infl.index.to_numpy(dtype=float), infl), obs_t)
+        capacity = estimate_capacity(
+            column,
+            aligned,
+            pd.Series(obs_c, obs_t),
+            n_inv=_EPA_START_N_INV,
+            time_unit=simulate_kw.get("time_unit", "days"),
+            conc_unit=simulate_kw.get("conc_unit", "ug/L"),
+        )
+        brk = capacity.breakthrough_time if until is None else float(until)
+        k_table = np.asarray(capacity.k_for(_EPA_K_BY_XN), dtype=float)
+
+        def get_base_k(xn):  # upstream k_by_xn_factor: interp1d over 1/n = 0.15 … 1.00
+            return float(np.interp(xn, _EPA_K_BY_XN, k_table))
+
+        k_factor0 = _epa_fouling_factor(
+            float(infl.index.max()), capacity.breakthrough_time, compound, simulate_kw
+        )
+    elif start == "compound":
+        if until is None:
+            raise ValueError('start="compound" needs until (the EPA k_data["brk"])')
+        brk = float(until)
+
+        def get_base_k(xn):
+            # upstream with k_data returns the current k_data K: get_ssq writes k * factor
+            # there, and only a real simulation (run_psdm_kfit) resets it afterwards, so a
+            # cached node leaves it changed
+            return state["k"]
+
+        k_factor0 = 1.0
+    else:
+        raise ValueError(f'start must be "capacity" or "compound", got {start!r}')
+
+    ssq_x = np.arange(brk)
+    obs_at = _interp(ssq_x, obs_t, obs_c)
+
+    def simulate_ssq(k_total: float, xn: float) -> float:
+        trial = compound.with_(k=float(k_total), n_inv=float(xn))
+        try:
+            if _ssq_fn is not None:
+                raise _Replay
+            res = simulate(column, trial, infl_frame, **simulate_kw)
+            t, c = res.effluent.index.to_numpy(), res.effluent[compound.name].to_numpy()
+            ssq = float(np.sum((_interp(ssq_x, t, c) - obs_at) ** 2))
+        except _Replay:
+            ssq = float(_ssq_fn(float(k_total), float(xn)))
+        except (RuntimeError, ValueError, FloatingPointError):
+            ssq = _EPA_FAILED
+        rows.append((float(k_total), float(xn), ssq))
+        progress(ssq)  # outside the try, see _fit_nelder_mead
+        return ssq
+
+    def node(k_factor, xn):
+        return (np.round(k_factor, 6), np.round(xn, 3))
+
+    state = {"k": compound.k}
+
+    def get_ssq(k, k_factor, xn, storage):
+        # only simulates nodes that have no sum of squares yet
+        state["k"] = k * k_factor * 1
+        if np.isnan(storage.loc[node(k_factor, xn)]):
+            ssq = simulate_ssq(k * k_factor * 1, xn * 1)
+            state["k"] = compound.k  # upstream run_psdm_kfit resets k_data
+            return ssq
+        return storage.loc[node(k_factor, xn)]
+
+    def store_if_new(k_factor, xn, value, storage):
+        if np.isnan(storage.loc[node(k_factor, xn)]):
+            storage.loc[node(k_factor, xn)] = value * 1
+
+    # ---- PSDM.run_all_smart, line by line --------------------------------------------------
+    best_xn = _EPA_START_N_INV
+    best_k_factor = k_factor0
+    base_k = get_base_k(best_xn)
+    best_k = base_k * best_k_factor
+    scale_k = best_k_factor * pm / 100 / num
+    max_k = best_k_factor * (1 + pm / 100)
+    min_k = best_k_factor * (1 - pm / 100)
+    storage = pd.DataFrame(
+        index=np.round(np.arange(min_k, max_k + scale_k / 2, scale_k), 6),
+        columns=np.round(np.arange(0.2, 1 + des_xn / 2, des_xn), 3),
+        dtype=float,
+    )
+    best_ssq = get_ssq(base_k, best_k_factor, best_xn, storage)
+    storage.loc[node(best_k_factor, best_xn)] = best_ssq * 1
+
+    xn_idx = np.where(storage.columns == np.round(best_xn, 3))[0][0]
+    k_idx = np.where(storage.index == np.round(best_k_factor, 6))[0][0]
+    xn_idx_max = len(storage.columns) - 1
+    k_idx_max = len(storage.index) - 1
+
+    # coarse start: 1/n = 0.2, 0.4, 0.6, 0.8, 1.0 at the starting K factor
+    for xn_test in np.round(np.linspace(0, xn_idx_max, num=5), 0).astype(int):
+        xn = storage.columns[xn_test]
+        k_factor = storage.index[k_idx]
+        test_base_k = get_base_k(xn)
+        test_ssq = get_ssq(test_base_k, k_factor, xn, storage)
+        storage.loc[node(k_factor, xn)] = test_ssq * 1
+        if test_ssq < best_ssq:
+            best_xn, best_k, best_ssq = xn * 1, k_factor * test_base_k * 1, test_ssq * 1
+            xn_idx = xn_test * 1
+
+    shift_xn = shift_k = 0
+    loops_tried = 0
+    converged = True
+    done = False
+    while not done:
+        loops_tried += 1
+        xn_idx += shift_xn
+        k_idx += shift_k
+        xn = storage.columns[xn_idx]
+        k_factor = storage.index[k_idx]
+        center_base_k = get_base_k(xn)
+
+        base_ssq = get_ssq(center_base_k, k_factor, xn, storage)
+        store_if_new(k_factor, xn, base_ssq, storage)
+        if base_ssq < best_ssq:
+            best_xn, best_k, best_ssq = xn * 1, k_factor * center_base_k * 1, base_ssq * 1
+
+        # neighbours in 1/n (at the current K factor)
+        right_ssq = left_ssq = 1e20
+        if xn_idx < xn_idx_max:
+            right_xn = storage.columns[xn_idx + 1]
+            right_base_k = get_base_k(right_xn)
+            right_ssq = get_ssq(right_base_k, k_factor, right_xn, storage)
+            store_if_new(k_factor, right_xn, right_ssq, storage)
+            if right_ssq < best_ssq:
+                best_xn, best_k, best_ssq = right_xn * 1, k_factor * right_base_k * 1, right_ssq
+        if xn_idx >= 1:
+            left_xn = storage.columns[xn_idx - 1]
+            left_base_k = get_base_k(left_xn)
+            left_ssq = get_ssq(left_base_k, k_factor, left_xn, storage)
+            store_if_new(k_factor, left_xn, left_ssq, storage)
+            if left_ssq < best_ssq:
+                best_xn, best_k, best_ssq = left_xn * 1, k_factor * left_base_k * 1, left_ssq
+        if right_ssq <= base_ssq and xn_idx + 1 <= xn_idx_max:
+            shift_xn = 1
+        elif left_ssq <= base_ssq and xn_idx - 1 >= 0:
+            shift_xn = -1
+        else:
+            shift_xn = 0
+
+        # neighbours in K factor (at the current 1/n, base K of the centre)
+        upper_ssq = lower_ssq = 1e20
+        if k_idx < k_idx_max:
+            upper = storage.index[k_idx + 1]
+            upper_ssq = get_ssq(center_base_k, upper, xn, storage)
+            store_if_new(upper, xn, upper_ssq, storage)
+            if upper_ssq < best_ssq:
+                best_xn, best_k, best_ssq = xn * 1, upper * center_base_k * 1, upper_ssq
+        if k_idx >= 1:
+            lower = storage.index[k_idx - 1]
+            lower_ssq = get_ssq(center_base_k, lower, xn, storage)
+            store_if_new(lower, xn, lower_ssq, storage)
+            if lower_ssq < best_ssq:
+                best_xn, best_k, best_ssq = xn * 1, lower * center_base_k * 1, lower_ssq
+        if upper_ssq <= base_ssq and k_idx + 1 <= k_idx_max:
+            shift_k = 1
+        elif lower_ssq <= base_ssq and k_idx - 1 >= 0:
+            shift_k = -1
+        else:
+            shift_k = 0
+
+        if np.abs(base_ssq - best_ssq) <= 1e-7 or loops_tried >= search_limit:
+            converged = bool(np.abs(base_ssq - best_ssq) <= 1e-7)
+            if best_k <= 0:
+                best_k = 1e-6  # upstream keeps K positive
+            done = True
+        elif shift_k == 0 and shift_xn == 0:
+            done = True
+    # ----------------------------------------------------------------------------------------
+
+    best = compound.with_(k=float(best_k), n_inv=float(best_xn))
+    res = simulate(column, best, infl_frame, **simulate_kw)
+    storage.index.name, storage.columns.name = "k_factor", "n_inv"
+    return FitResult(
+        best,
+        float(best_ssq),
+        res,
+        pd.DataFrame(rows, columns=["k", "n_inv", "ssq"]),
+        method="epa",
+        ssq_grid=storage,
+        capacity=capacity,
+        breakthrough_time=float(brk),
+        converged=converged,
+    )
+
+
+def _fit_nelder_mead(
     column: Column,
     compound: Compound,
     influent: pd.Series | pd.DataFrame,
@@ -100,7 +471,7 @@ def fit_freundlich(
     callback: Callback | None = None,
     **simulate_kw,
 ) -> FitResult:
-    """Fit Freundlich ``K`` and ``1/n`` of one compound to observed breakthrough.
+    """``fit_freundlich(method="nelder-mead")``: the psdm 0.1/0.2 search, not in the EPA code.
 
     The search runs over ``(log q_ref, 1/n)``, where ``q_ref = K C_ref^(1/n)`` is the
     loading at the mean influent concentration ``C_ref``. Holding ``q_ref`` while ``1/n``
@@ -158,7 +529,14 @@ def fit_freundlich(
     best, ssq, res = trial(opt.x)
     if res is None:
         raise RuntimeError("simulation failed at the best-fit parameters")
-    return FitResult(best, ssq, res, pd.DataFrame(rows, columns=["k", "n_inv", "ssq"]))
+    return FitResult(
+        best,
+        ssq,
+        res,
+        pd.DataFrame(rows, columns=["k", "n_inv", "ssq"]),
+        method="nelder-mead",
+        converged=bool(opt.success),
+    )
 
 
 @dataclass

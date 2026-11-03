@@ -35,8 +35,12 @@ PARAMETERS = ("capacity", "k", "q_n_inv", "c0", "mass", "flow_rate", "kf", "dp",
 """Inputs :func:`model_uncertainty` can perturb.
 
 ``capacity``
-    ``K`` and ``1/n`` together in opposite directions (``K·(1+f)`` with ``1/n·(1-f)`` and
-    vice versa), which moves the capacity most.
+    ``K·(1+f)`` with ``1/n·(1-f)`` (label ``capacity+…``) and ``K·(1-f)`` with ``1/n·(1+f)``
+    (``capacity-…``), as in the EPA code. The loading ``q = K C^(1/n)`` changes by
+    ``(1+f) C^(-f/n)``, so above ``C = (1+f)^(n/f)`` ug/L (about 9 ug/L for ``1/n = 0.43``
+    and ``f = 0.1``) ``capacity+`` *lowers* the capacity and ``capacity-`` raises it; the
+    labels name the direction of ``K``, not of the capacity. The envelope contains both
+    runs. To change the capacity alone use ``k``.
 ``k``
     Freundlich ``K`` only.
 ``q_n_inv``

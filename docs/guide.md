@@ -52,11 +52,27 @@ fit = psdm.fit_freundlich(column, tce, influent["TCE"], effluent["TCE"], water="
 fit.compound.k, fit.compound.n_inv, fit.ssq
 ```
 
-The search starts from the compound's `k` and `n_inv` and minimises the squared error at the
-observed effluent times. It runs over `(log q_ref, 1/n)` where `q_ref` is the capacity at the
-mean influent concentration, so changing `1/n` does not change the predicted capacity much.
-With a constant influent concentration, `q_ref` is well determined but `1/n` and `K` are not
-individually — use isotherm data or several concentrations to pin down `1/n`.
+By default this is the EPA PSDM fitter `run_all_smart`, ported step by step and checked
+against it (`tests/test_fit_epa.py`):
+
+- `start="capacity"` (default): a mass balance on the data gives the loading `q` and the
+  breakthrough time `t_b` ({func}`psdm.estimate_capacity`). For every `1/n` the base `K`
+  keeps that `q`, and the `K` factor starts at the inverse mean fouling reduction up to `t_b`.
+- `start="compound"`: the base `K` is the compound's `k` for every `1/n` and `until` is the
+  window `t_b` (the EPA code with a `Kdata` sheet).
+- The sum of squares is taken at whole days `0 … t_b − 1`, with simulated and observed
+  effluent linearly interpolated and extrapolated.
+- The search moves on a grid of `K` factor (±10 % in 11 steps each way) by `1/n`
+  (0.2–1.0 in steps of 0.025), from `1/n` = 0.2, 0.4, … 1.0 towards lower sums of squares.
+
+The result is a grid node, possibly on the grid edge; `fit.ssq_grid` shows every visited node.
+With a constant influent concentration only the capacity at that concentration is well
+determined, not `1/n` and `K` individually — use isotherm data or several concentrations to
+pin down `1/n`.
+
+`method="nelder-mead"` keeps the psdm 0.1/0.2 search (not in the EPA code): a bounded
+Nelder–Mead search over `(log q_ref, 1/n)` starting from the compound, with
+`n_inv_bounds`, `q_factor_bounds`, `until` and `max_evaluations`.
 
 ## Batch isotherms
 
@@ -74,7 +90,8 @@ fit.params, fit.stderr, fit.r2
 | `PSDM.PSDM(column_info, chem_data, raw_data, ...)` | {class}`psdm.Column`, {class}`psdm.Compound` |
 | `column.run_psdm()` | {func}`psdm.simulate` (returns a {class}`~psdm.Result`, not a dict of interpolators) |
 | `column.run_psdm_kfit(comp)` with a single `test_range`/`xn_range` | {func}`psdm.simulate` + {func}`psdm.sum_of_squares` |
-| `run_all`, `run_all_smart` | {func}`psdm.fit_freundlich` |
+| `run_all_smart` | {func}`psdm.fit_freundlich` (`method="epa"`, the default) |
+| `run_all`, `run_all_MP` (staged/brute grid) | not ported |
 | `PSDM_tools.isotherm_fit` | {func}`psdm.fit_isotherm` |
 | `PSDM(...)` without `k_data` (`__calculate_capacity`) | {func}`psdm.estimate_capacity` |
 | `column.model_uncertainty(...)` | {func}`psdm.model_uncertainty` |

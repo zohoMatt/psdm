@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import dataclass, field, replace
 
 from . import units
+
+BED_DENSITY_TOLERANCE = 0.05
+"""Relative difference between ``Column.bed_density`` and mass / bed volume that warns."""
 
 
 @dataclass(frozen=True)
@@ -31,7 +35,10 @@ class Column:
     particle_porosity
         Particle void fraction ``epor``.
     bed_density
-        Bulk (apparent bed) density ``rhof``, g/mL. Informational only.
+        Bulk (apparent bed) density ``rhof``, g/mL. Not used by the model, which works from
+        ``mass`` and the bed volume; only the mass perturbation of
+        :func:`psdm.model_uncertainty` uses it. A warning is issued when it differs from
+        ``mass / bed_volume`` by more than :data:`BED_DENSITY_TOLERANCE`.
     tortuosity
         Pore tortuosity used in organic-free water.
     psdfr
@@ -73,6 +80,18 @@ class Column:
                 f"bed porosity is {self.bed_porosity:.3f}; check mass, length, diameter "
                 "and particle_density"
             )
+        if self.bed_density is not None:
+            packed = self.mass / self.bed_volume
+            if abs(self.bed_density / packed - 1) > BED_DENSITY_TOLERANCE:
+                warnings.warn(
+                    f"Column {self.name!r}: bed_density {self.bed_density:.3g} g/mL differs from "
+                    f"mass / bed volume = {packed:.3g} g/mL. The model uses mass and volume; "
+                    "bed_density only matters for the mass perturbation of "
+                    "psdm.model_uncertainty, where the bed lengthens only once the mass "
+                    "exceeds bed_density times the volume.",
+                    UserWarning,
+                    stacklevel=3,
+                )
 
     @classmethod
     def from_units(

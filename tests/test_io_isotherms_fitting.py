@@ -69,7 +69,9 @@ def test_fit_freundlich_recovers_synthetic_parameters(addesigns_column):
     effluent = pd.Series(observed(t_obs, "TCE"), index=t_obs)
 
     start = true.with_(k=true.k * 0.6, n_inv=0.55)
-    fit = psdm.fit_freundlich(addesigns_column, start, influent, effluent, max_evaluations=60, **kw)
+    fit = psdm.fit_freundlich(
+        addesigns_column, start, influent, effluent, method="nelder-mead", max_evaluations=60, **kw
+    )
     assert fit.ssq < 1e-2 * psdm.sum_of_squares(
         psdm.simulate(addesigns_column, start, influent, **kw), effluent
     )

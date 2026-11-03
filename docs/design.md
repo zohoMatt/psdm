@@ -25,11 +25,12 @@ The breakthrough time is where the effluent reaches the influent concentration. 
 not got there yet, it is extrapolated with a logistic curve or, failing that, a straight
 line; {data}`psdm.capacity.METHODS` lists the outcomes. With no effluent breakthrough at all
 (`method == "minimum"`) the estimate is a lower bound. The result is a good starting point
-for {func}`psdm.fit_freundlich`:
+for {func}`psdm.fit_freundlich`, which by default (like the EPA `run_all_smart`) runs this
+estimate itself and searches around it:
 
 ```python
-start = data.compounds(**{name: {"k": est.k, "n_inv": est.n_inv}})[0]
-fit = psdm.fit_freundlich(data.column, start, data.influent[name], data.effluent[name])
+fit = psdm.fit_freundlich(data.column, compound, data.influent[name], data.effluent[name])
+fit.capacity   # the mass-balance estimate the search started from
 ```
 
 One deliberate difference from the EPA code: an effluent with a single non-zero value that is

@@ -66,6 +66,7 @@ def test_fits_treat_solver_errors_as_failed_trials(addesigns_column, tce, influe
         tce,
         influent,
         observed,
+        method="nelder-mead",
         max_evaluations=10,
         n_inv_bounds=(0.01, 1.0),
         **KW,
@@ -157,7 +158,14 @@ def test_freundlich_callback(addesigns_column, tce, influent, observed):
     rec = _Recorder()
     start = tce.with_(k=3000.0, n_inv=0.5)
     fit = psdm.fit_freundlich(
-        addesigns_column, start, influent, observed, max_evaluations=15, callback=rec, **KW
+        addesigns_column,
+        start,
+        influent,
+        observed,
+        method="nelder-mead",
+        max_evaluations=15,
+        callback=rec,
+        **KW,
     )
     assert len(rec.calls) == len(fit.evaluations)
     _assert_monotone(rec.calls)
