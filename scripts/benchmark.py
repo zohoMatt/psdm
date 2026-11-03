@@ -102,6 +102,65 @@ CASES = {
 }
 SINGLE_T_END = 174.0
 
+# Code paths not reached by CASES. Accuracy only (one run each, not timed). Every case is the
+# AdDesignS column with a constant TCE-like influent for 174 d; the keys below override the
+# defaults in path_spec(). tests/test_paths.py runs the same cases against reference curves
+# written by tests/data/reference/generate_paths.py, which calls run_path_upstream().
+PATHS = {
+    "tortu2": ("Tortuosity 2, no fouling", dict(tortu=2.0)),
+    "mt_of": ("Manual kf/dp/ds, no fouling", dict(kf=2e-3, dp=4e-6, ds=1e-9)),
+    "mt_rhine": (
+        "Manual kf/dp/ds, Rhine",
+        dict(water="Rhine", cls="chlorinated hydrocarbon", kf=5e-3, dp=1.2e-5, ds=1e-9),
+    ),
+    "pfas": ("PFAS fouling, PFOA in Rhine", dict(water="Rhine", cls="PFAS", name="PFOA")),
+    "pfas_avg": (
+        "PFAS fouling, unlisted PFAS (average b1, b2)",
+        dict(water="Rhine", cls="PFAS", name="PFXX"),
+    ),
+    "gnielinski": ("Gnielinski film-transfer correlation", dict(corr="Gnielinski")),
+    "wakao": (
+        "Wakao and Funazkri correlation, Rhine",
+        dict(corr="Wakao and Funazkri", water="Rhine", cls="chlorinated hydrocarbon"),
+    ),
+    "temp10": ("Water at 10 °C", dict(temp=10.0)),
+    "temp30_rhine": (
+        "Water at 30 °C, Rhine",
+        dict(temp=30.0, water="Rhine", cls="chlorinated hydrocarbon"),
+    ),
+    "ne3": ("Single compound, ne = 3 (nr 8, nz 5)", dict(nr=8, nz=5, ne=3)),
+    "hours": ("Time in hours", dict(time_unit="hours")),
+}
+PATH_TOL = 5e-3  # max |psdm - upstream| / C0
+
+# K and 1/n fits on examples/Example_TCE.xlsx, sheet data_optimize (ug/L, days).
+FITS = {
+    "fit_full": ("data_optimize, all data", dict(until=None)),
+    "fit_55": ("data_optimize, t ≤ 55 d only", dict(until=55.0)),
+}
+FIT_KW = dict(nr=8, nz=12)  # as in upstream Example_TCE.py
+
+
+def path_spec(name):
+    d = dict(
+        c0=5.0,
+        water="Organic Free",
+        cls="halogenated alkenes",
+        name="TCE",
+        tortu=1.0,
+        temp=20.0,
+        nr=14,
+        nz=19,
+        ne=1,
+        corr="Chern and Chien",
+        time_unit="days",
+        kf=None,
+        dp=None,
+        ds=None,
+    )
+    d.update(PATHS[name][1])
+    return d
+
 
 # ============================================================================ workers
 class SolveLog:
@@ -139,21 +198,25 @@ def _timed(func):
     return out, time.perf_counter() - t0
 
 
-def worker_upstream(case, upstream, float_inputs=False):
+def load_upstream(upstream):
+    """Import upstream ``psdm/PSDM.py``. Its ``psdm/`` folder has no ``__init__.py`` and would
+    be shadowed by the installed psdm package, so it is loaded as the package ``epa_psdm``."""
     import types
 
-    import numpy as np
-    import pandas as pd
-
-    # upstream's psdm/ folder has no __init__.py and would be shadowed by the installed psdm
-    # package, so load it as the package "epa_psdm"
-    pkg_dir = Path(upstream).resolve() / "psdm"
-    t0 = time.perf_counter()
     pkg = types.ModuleType("epa_psdm")
-    pkg.__path__ = [str(pkg_dir)]
+    pkg.__path__ = [str(Path(upstream).resolve() / "psdm")]
     sys.modules["epa_psdm"] = pkg
     import epa_psdm.PSDM as P
 
+    return P
+
+
+def worker_upstream(case, upstream, float_inputs=False):
+    import numpy as np
+    import pandas as pd
+
+    t0 = time.perf_counter()
+    P = load_upstream(upstream)
     import_s = time.perf_counter() - t0
     log = SolveLog(P.solve_ivp)
     P.solve_ivp = log
@@ -326,6 +389,213 @@ def worker_psdm(case):
     return _run_iterations(import_s, read, build, run, c0, log)
 
 
+def _path_grid(d):
+    """349 output times over 0-174 d, in the case's time unit."""
+    import numpy as np
+
+    return np.linspace(0, SINGLE_T_END, 349) * (24.0 if d["time_unit"] == "hours" else 1.0)
+
+
+def run_path_upstream(P, name):
+    """Run one PATHS case with upstream ``run_psdm_kfit``; returns (grid, effluent mg/L)."""
+    import numpy as np
+    import pandas as pd
+
+    d = path_spec(name)
+    comp = d["name"]
+    inp = pd.read_excel(DATA / "addesigns_test.xlsx", sheet_name="data", index_col=[0])["Test"]
+    num = pd.to_numeric(inp, errors="coerce")
+    column_prop = num[["epor", "diam", "L", "wt", "rhop", "rhof", "flrt", "rad"]].astype(object)
+    column_prop["influentID"] = "Test"
+    column_prop["tortu"] = d["tortu"]
+    column_prop["psdfr"] = 5.0
+    column_prop.name = "Test"
+    chem = pd.DataFrame({comp: num[["MW", "MolarVol"]]}).astype(float)
+    kd = pd.DataFrame({comp: [num["K"], num["1/n"], 1.0, 100.0]}, index=["K", "1/n", "q", "brk"])
+    scale = 24.0 if d["time_unit"] == "hours" else 1.0
+    idx = pd.MultiIndex.from_tuples([("Test", comp)])
+    infl = pd.DataFrame(d["c0"] * 1e6, index=np.arange(175) * scale, columns=idx)
+
+    def build(**extra):
+        return P.PSDM(
+            column_prop,
+            chem,
+            infl,
+            conc_type="ng",
+            chem_type=d["cls"],
+            water_type=d["water"],
+            k_data=kd,
+            test_range=kd.loc["K"].values,
+            xn_range=kd.loc["1/n"].values,
+            optimize=False,
+            nr=d["nr"],
+            nz=d["nz"],
+            ne=d["ne"],
+            temp=d["temp"],
+            time_type=d["time_unit"],
+            **extra,
+        )
+
+    mt = {k: d[k] for k in ("kf", "dp", "ds") if d[k] is not None}
+    if d["corr"] != "Chern and Chien":
+        # upstream run_psdm hard-codes the Chern and Chien correlation; the others are only
+        # reachable through kf_calc, so evaluate it as run_psdm would and pass kf explicitly
+        col = build()
+        difl = 13.26e-5 / (((col.vw * 100.0) ** 1.14) * (chem[comp]["MolarVol"] ** 0.589))
+        sc = col.vw / (col.dw * difl)
+        kf = P.kf_calc(difl / (2 * col.rad), col.re, sc, col.ebed, corr=d["corr"])
+        mt["kf"] = float(np.squeeze(kf))
+    col = build(mass_transfer={comp: mt}) if mt else build()
+    md = col.run_psdm_kfit(comp)[-1]
+    grid = _path_grid(d)
+    return grid, np.interp(grid, md.index.values, md.values[:, 0]) / 1e6
+
+
+def run_path_psdm(name):
+    import pandas as pd
+
+    import psdm
+
+    d = path_spec(name)
+    p = pd.read_excel(DATA / "addesigns_test.xlsx", sheet_name="data", index_col=0)["Test"]
+    column = psdm.Column(
+        length=float(p["L"]),
+        diameter=float(p["diam"]),
+        mass=float(p["wt"]),
+        flow_rate=float(p["flrt"]),
+        particle_radius=float(p["rad"]),
+        particle_density=float(p["rhop"]),
+        particle_porosity=float(p["epor"]),
+        bed_density=float(p["rhof"]),
+        tortuosity=d["tortu"],
+    )
+    compound = psdm.Compound(
+        d["name"],
+        mw=float(p["MW"]),
+        molar_volume=float(p["MolarVol"]),
+        k=float(p["K"]),
+        n_inv=float(p["1/n"]),
+        kf=d["kf"],
+        dp=d["dp"],
+        ds=d["ds"],
+        fouling_class=d["cls"],
+    )
+    grid = _path_grid(d)
+    influent = pd.DataFrame({d["name"]: [d["c0"], d["c0"]]}, index=[0.0, grid[-1]])
+    res = psdm.simulate(
+        column,
+        compound,
+        influent,
+        water=d["water"],
+        temperature=d["temp"],
+        time_unit=d["time_unit"],
+        conc_unit="mg/L",
+        nr=d["nr"],
+        nz=d["nz"],
+        ne=d["ne"],
+        correlation=d["corr"],
+    )
+    return grid, res(grid, d["name"]), res.mass_transfer[d["name"]].to_dict()
+
+
+def worker_path(impl, name, upstream):
+    t0 = time.perf_counter()
+    if impl == "upstream":
+        grid, y = run_path_upstream(load_upstream(upstream), name)
+        extra = {}
+    else:
+        grid, y, mt = run_path_psdm(name)
+        extra = {"mass_transfer": mt}
+    d = path_spec(name)
+    days = grid / (24.0 if d["time_unit"] == "hours" else 1.0)
+    return dict(
+        grid=list(map(float, days)),
+        curve=list(map(float, y)),
+        c0=d["c0"],
+        seconds=time.perf_counter() - t0,
+        **extra,
+    )
+
+
+def fit_data():
+    """Observed influent and effluent of data_optimize as written in the sheet (ug/L, days)."""
+    import pandas as pd
+
+    raw = pd.read_excel(EXAMPLES / "Example_TCE.xlsx", sheet_name="data_optimize")
+    out = {}
+    for kind, g in raw.groupby("type"):
+        out[kind] = g.set_index("time")["concentration"].astype(float).sort_index()
+    return out["influent"], out["effluent"]
+
+
+def worker_fit(impl, name, upstream):
+    """Fit K and 1/n on data_optimize (optionally only t <= until) and report the result."""
+    import numpy as np
+    import pandas as pd
+
+    until = FITS[name][1]["until"]
+    grid = np.linspace(0, 175, 351)
+    if impl == "upstream":
+        P = load_upstream(upstream)
+        fn = EXAMPLES / "Example_TCE.xlsx"
+        chem = P.process_input_data(fn, sheet_name="Properties")
+        raw, cinfo, (comp,), carbons = P.process_input_file(
+            fn, data_sheet="data_optimize", column_sheet="columnSpecs"
+        )
+        window = raw if until is None else raw[raw.index <= until]
+        calls = [0]
+        run_psdm = P.PSDM.run_psdm
+
+        def counted(self):
+            calls[0] += 1
+            return run_psdm(self)
+
+        P.PSDM.run_psdm = counted
+        t0 = time.perf_counter()
+        # no k_data: the start point comes from upstream's __calculate_capacity, as in normal use
+        col = P.PSDM(cinfo[carbons[0]], chem, window, optimize=False, **FIT_KW)
+        start = col.k_data[comp][["K", "1/n", "q", "brk"]].astype(float).to_dict()
+        col.run_all_smart(save_file=False)
+        seconds = time.perf_counter() - t0
+        evaluations = calls[0]
+        k, n_inv = (float(col.k_data[comp][key]) for key in ("K", "1/n"))
+        own_ssq = float(np.nanmin(col.ssq_storage.values.astype(float)))
+        # simulate the fitted parameters over the full data set with upstream itself
+        kd = pd.DataFrame({comp: [k, n_inv, 1.0, 1e3, 1.0]}, index=["K", "1/n", "q", "brk", "AveC"])
+        full = P.PSDM(cinfo[carbons[0]], chem, raw, optimize=False, k_data=kd, **FIT_KW)
+        curve = full.run_psdm()[comp](grid)
+        extra = dict(start=start, own_ssq=own_ssq, own_ssq_note="min of ssq_storage")
+    else:
+        import psdm
+        from psdm.io import read_excel
+
+        ds = read_excel(EXAMPLES / "Example_TCE.xlsx", data_sheet="data_optimize")
+        (start,) = ds.compounds()
+        comp = start.name
+        infl, eff = ds.influent[comp], ds.effluent[comp]
+        t0 = time.perf_counter()
+        fit = psdm.fit_freundlich(ds.column, start, infl, eff, until=until, **FIT_KW)
+        seconds = time.perf_counter() - t0
+        evaluations = len(fit.evaluations) + 1
+        k, n_inv = fit.compound.k, fit.compound.n_inv
+        curve = fit.result(grid, comp)
+        extra = dict(
+            start={"K": start.k, "1/n": start.n_inv},
+            own_ssq=fit.ssq,
+            own_ssq_note="fit.ssq (gap-filled effluent)",
+            path=fit.evaluations.to_dict(orient="list"),
+        )
+    return dict(
+        k=k,
+        n_inv=n_inv,
+        evaluations=evaluations,
+        seconds=seconds,
+        grid=list(map(float, grid)),
+        curve=list(map(float, curve)),
+        **extra,
+    )
+
+
 def _run_iterations(import_s, read, build, run, c0, log, n=2):
     iters = []
     for i in range(n):
@@ -443,7 +713,114 @@ def benchmark(upstream: Path, repeats: int, cases: list[str]):
     return raw
 
 
+def accuracy_runs(upstream: Path, paths: list[str], fits: list[str]):
+    """One run per implementation of each PATHS and FITS case, each in a fresh process."""
+    out = {"paths": {}, "fits": {}}
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_out = Path(tmp) / "w.json"
+        for group, names in (("paths", paths), ("fits", fits)):
+            for name in names:
+                out[group][name] = {}
+                for impl in ("upstream", "psdm"):
+                    res = run_worker(f"{group[:-1]}_{impl}", name, upstream, tmp_out)
+                    out[group][name][impl] = res
+                    print(
+                        f"{group[:-1]:5s} {name:14s} {impl:9s} {res['seconds']:7.2f}s", flush=True
+                    )
+    return out
+
+
 # ============================================================================ analysis
+def fit_reference(fits_raw):
+    """Score every fitted (K, 1/n) with one simulator (psdm) and one data set (the effluent
+    rows of the sheet), and scan a grid for the best SSQ reachable in each window."""
+    import numpy as np
+
+    import psdm
+    from psdm.io import read_excel
+
+    ds = read_excel(EXAMPLES / "Example_TCE.xlsx", data_sheet="data_optimize")
+    (base,) = ds.compounds()
+    infl = ds.influent[[base.name]]
+    _, eff = fit_data()
+
+    def ssq(k, n_inv):
+        try:
+            res = psdm.simulate(ds.column, base.with_(k=k, n_inv=n_inv), infl, **FIT_KW)
+        except (RuntimeError, ValueError):
+            return {"window": {}, "full": float("nan")}
+        y = res(eff.index.to_numpy(), base.name) - eff.to_numpy()
+        win = {
+            name: float(np.sum(y[eff.index <= (FITS[name][1]["until"] or np.inf)] ** 2))
+            for name in FITS
+        }
+        return {"window": win, "full": float(np.sum(y**2))}
+
+    c_ref = float(ds.influent[base.name].mean())
+    q0 = base.k * c_ref**base.n_inv
+    scan = []
+    for qf in np.geomspace(0.1, 10, 25):
+        for n_inv in np.round(np.arange(0.2, 1.0001, 0.1), 3):
+            k = q0 * qf / c_ref**n_inv
+            scan.append(dict(k=float(k), n_inv=float(n_inv), **ssq(k, n_inv)))
+    out = {}
+    for name, runs in fits_raw.items():
+        entry = {"label": FITS[name][0], "until": FITS[name][1]["until"]}
+        for impl, r in runs.items():
+            s = ssq(r["k"], r["n_inv"])
+            yu = np.interp(eff.index.to_numpy(), r["grid"], r["curve"]) - eff.to_numpy()
+            within = eff.index <= (entry["until"] or np.inf)
+            entry[impl] = {
+                **{k: v for k, v in r.items() if k not in ("grid", "curve", "path")},
+                "ssq_window": s["window"][name],
+                "ssq_full": s["full"],
+                "ssq_window_own_sim": float(np.sum(yu[within] ** 2)),
+                "ssq_full_own_sim": float(np.sum(yu**2)),
+            }
+            entry.setdefault("curves", {"grid": r["grid"]})[impl] = r["curve"]
+        start_ssq = ssq(base.k, base.n_inv)
+        entry["start_psdm"] = {
+            "k": base.k,
+            "n_inv": base.n_inv,
+            "ssq_window": start_ssq["window"][name],
+        }
+        best = min(scan, key=lambda row: row["window"][name])
+        entry["grid_best"] = {
+            "k": best["k"],
+            "n_inv": best["n_inv"],
+            "ssq_window": best["window"][name],
+            "ssq_full": best["full"],
+        }
+        entry["observed"] = {"t": eff.index.tolist(), "c": eff.tolist()}
+        out[name] = entry
+    return out
+
+
+def summarise_paths(paths_raw):
+    import numpy as np
+
+    out = {}
+    for name, runs in paths_raw.items():
+        up, ps = runs["upstream"], runs["psdm"]
+        grid = np.asarray(up["grid"])
+        yu = np.asarray(up["curve"]) / up["c0"]
+        yp = np.interp(grid, ps["grid"], ps["curve"]) / up["c0"]
+        diff = yp - yu
+        out[name] = {
+            "label": PATHS[name][0],
+            "spec": {k: v for k, v in path_spec(name).items()},
+            "max_abs_rel": float(np.abs(diff).max()),
+            "rms_rel": float(np.sqrt(np.mean(diff**2))),
+            "pass": bool(np.abs(diff).max() < PATH_TOL),
+            "seconds": {"upstream": up["seconds"], "psdm": ps["seconds"]},
+            "mass_transfer": ps["mass_transfer"],
+            "grid": up["grid"],
+            "upstream": yu.tolist(),
+            "psdm": yp.tolist(),
+        }
+    return out
+
+
 def addesigns(sheet):
     import pandas as pd
 
@@ -688,7 +1065,230 @@ def pct(x, digits=2):
     return f"{100 * x:.{digits}f} %"
 
 
-def render(summary, env, repeats):
+def chart_card(title, meta, t, series, ad=None, yhi=1.1, ylabel="C / C0", resid=None):
+    """One hoverable chart card; ``series`` items are (name, css class, colour var, y)."""
+    main, geo = svg_chart(
+        t, [{"y": y, "cls": cls} for _, cls, _, y in series], ad, yhi=yhi, ylabel=ylabel
+    )
+    dsvg = ""
+    if resid is not None:
+        lim = max(1e-3, max(abs(v) for v in resid) * 1.15)
+        dsvg, _ = svg_chart(
+            t,
+            [{"y": resid, "cls": "diff"}],
+            h=110,
+            ylo=-lim,
+            yhi=lim,
+            ylabel="psdm − upstream, % of C0",
+            pct=True,
+            cls="resid",
+            hair=False,
+        )
+    data = dict(t=t, series=[dict(name=n, color=c, y=y) for n, _, c, y in series], **geo)
+    if ad:
+        data["ad"] = {"t": ad[0], "c": ad[1]}
+    return (
+        f'<div class="card" data-chart><h3>{html.escape(title)}</h3><p class="meta">{html.escape(meta)}</p>'
+        f'{main}{dsvg}<div class="tip"></div>'
+        f'<script type="application/json">{json.dumps(data, separators=(",", ":"))}</script></div>'
+    )
+
+
+def _spec_text(d):
+    default = {
+        "c0": 5.0,
+        "water": "Organic Free",
+        "cls": "halogenated alkenes",
+        "name": "TCE",
+        "tortu": 1.0,
+        "temp": 20.0,
+        "nr": 14,
+        "nz": 19,
+        "ne": 1,
+        "corr": "Chern and Chien",
+        "time_unit": "days",
+        "kf": None,
+        "dp": None,
+        "ds": None,
+    }
+    keys = {
+        "water": "water",
+        "cls": "fouling class",
+        "name": "compound",
+        "tortu": "tortuosity",
+        "temp": "°C",
+        "nr": "nr",
+        "nz": "nz",
+        "ne": "ne",
+        "corr": "kf correlation",
+        "time_unit": "time unit",
+        "kf": "kf",
+        "dp": "dp",
+        "ds": "ds",
+    }
+    return ", ".join(
+        f"{keys[k]} {d[k]:g}" if isinstance(d[k], float) else f"{keys[k]} {d[k]}"
+        for k in keys
+        if d[k] != default[k]
+    )
+
+
+def render_paths(paths):
+    rows, charts = [], []
+    for p in paths.values():
+        ok = '<span style="color:var(--good)">pass</span>' if p["pass"] else "<b>FAIL</b>"
+        mt = p["mass_transfer"]
+        rows.append(
+            f"<tr><td>{html.escape(p['label'])}<br><small>{html.escape(_spec_text(p['spec']))}</small></td>"
+            f"<td>{pct(p['max_abs_rel'])}</td><td>{pct(p['rms_rel'], 3)}</td><td>{ok}</td>"
+            f"<td>{mt['kf']:.3g}</td><td>{mt['dp']:.3g}</td><td>{mt['ds']:.3g}</td></tr>"
+        )
+        diff = [a - b for a, b in zip(p["psdm"], p["upstream"], strict=True)]
+        charts.append(
+            chart_card(
+                p["label"],
+                f"{_spec_text(p['spec'])} · max |Δ| {pct(p['max_abs_rel'])}",
+                p["grid"],
+                [("upstream", "up", "--s1", p["upstream"]), ("psdm", "ps", "--s2", p["psdm"])],
+                yhi=max(1.1, max(p["upstream"]) * 1.05),
+                resid=diff,
+            )
+        )
+    worst = max(p["max_abs_rel"] for p in paths.values())
+    npass = sum(p["pass"] for p in paths.values())
+    return f"""<h2>Other code paths</h2>
+<p>Options the timed cases above do not exercise, each run once by both codes and compared point by point. All
+cases use the AdDesignS column with a constant 5 mg/L influent (TCE properties) for 174 d and the default
+nr = 14, nz = 19 unless stated. Pass means max |psdm − upstream| / C0 &lt; {pct(PATH_TOL, 1)}.
+<b>{npass} of {len(paths)} pass; worst {pct(worst)}.</b> The same cases run in the test suite
+(<code>tests/test_paths.py</code>). kf, dp and ds are the values psdm used (<code>Result.mass_transfer</code>; in
+fouled water ds is divided by 1e10, as upstream does, also when ds is given).</p>
+<div class="tablewrap"><table><thead><tr><th>Case</th><th>max |Δ|/C0</th><th>RMS</th><th>0.5 %</th>
+<th>kf, cm/s</th><th>dp, cm²/s</th><th>ds, cm²/s</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
+<p>How each option reaches upstream: tortuosity through <code>column_data['tortu']</code> (used only in Organic
+Free water by both codes); manual coefficients through the <code>mass_transfer=</code> keyword; PFAS through
+<code>chem_type='PFAS'</code> with the compound name looked up in upstream's PFAS table (an unlisted name falls back
+to the average); temperature through <code>temp=</code>; time unit through <code>time_type='hours'</code>.
+Upstream's <code>run_psdm</code> hard-codes the Chern and Chien film-transfer correlation, so for the other
+correlations kf was computed with upstream's own <code>kf_calc</code> as <code>run_psdm</code> would and passed
+through <code>mass_transfer=</code>. Gnielinski gives nearly the same kf as Chern and Chien for this column; the
+Wakao and Funazkri case is the one that moves kf.</p>
+<p><b>Intentional differences in psdm</b> that show up as small residuals here, not bugs:</p>
+<ul>
+<li><b>Fouling is evaluated analytically.</b> psdm computes the K multiplier
+<code>rk1 + rk2 t + rk3 exp(rk4 t)</code> (floored at 1e-3) at each solver time. Upstream samples it at 500
+points over max(2000 d, run length), interpolates linearly, and then tabulates the interpolant once per simulated
+minute. Over 174 d those 500 points are about 4 d apart, so upstream's multiplier is a chord of the curve.</li>
+<li><b>Influent and tortuosity are evaluated on the solver's time scale.</b> Upstream builds per-minute
+tables and looks values up in them; psdm interpolates the influent and evaluates the tortuosity function
+directly.</li>
+<li><b>The film-transfer correlation is an argument.</b> <code>simulate(correlation=...)</code> uses any entry of
+<code>psdm.correlations.SHERWOOD</code>; upstream <code>run_psdm</code> always uses Chern and Chien, and the others
+are reachable only by passing kf by hand.</li>
+<li>Equal on purpose, although it looks odd: in fouled water both codes divide ds by 1e10 even when the
+user gives ds, and with a user-given dp and tortuosity ≠ 1 both multiply dp by the tortuosity in the pore
+diffusion modulus.</li>
+</ul>
+<div class="legend"><span><i style="border-color:var(--s1)"></i>upstream EPA PSDM</span>
+<span><i class="dash" style="border-color:var(--s2)"></i>psdm</span></div>
+<div class="grid">{"".join(charts)}</div>"""
+
+
+def _fit_notes(r, lo, hi, max_sims=None):
+    notes = []
+    if min(abs(r["n_inv"] - lo), abs(r["n_inv"] - hi)) < 1e-3:
+        notes.append(f"1/n at its bound ({lo:g}–{hi:g})")
+    if max_sims and r["evaluations"] > max_sims:
+        notes.append(f"stopped at max_evaluations = {max_sims}")
+    return "; ".join(notes)
+
+
+def render_fits(fits):
+    rows, charts, verdict = [], [], []
+    for f in fits.values():
+        up, ps, gb = f["upstream"], f["psdm"], f["grid_best"]
+        ratio = ps["ssq_window"] / up["ssq_window"]
+        better = "better than" if ratio < 0.99 else "worse than" if ratio > 1.01 else "equal to"
+        notes = [f"psdm: {n}" for n in [_fit_notes(ps, 0.15, 1.0, 200)] if n] + [
+            f"upstream: {n}" for n in [_fit_notes(up, 0.2, 1.0)] if n
+        ]
+        verdict.append(
+            f"<li><b>{html.escape(f['label'])}</b>: psdm window SSQ {ps['ssq_window']:.3g} is "
+            f"<b>{better}</b> upstream's {up['ssq_window']:.3g} ({ratio:.2g}×), with "
+            f"{ps['evaluations']} simulations against {up['evaluations']}. Best grid point in the "
+            f"window: {gb['ssq_window']:.3g} (psdm reaches {ps['ssq_window'] / gb['ssq_window']:.2g}× "
+            f"that, upstream {up['ssq_window'] / gb['ssq_window']:.2g}×). All data: psdm "
+            f"{ps['ssq_full']:.3g}, upstream {up['ssq_full']:.3g}."
+            + (f" <small>{html.escape('; '.join(notes))}.</small>" if notes else "")
+            + "</li>"
+        )
+        rows.append(f'<tr><td colspan="7"><b>{html.escape(f["label"])}</b></td></tr>')
+        for name, r in (("upstream run_all_smart", up), ("psdm fit_freundlich", ps)):
+            rows.append(
+                f"<tr><td>{name}</td><td>{r['k']:,.1f}</td><td>{r['n_inv']:.3f}</td>"
+                f"<td>{r['ssq_window']:.4g}<br><small>own sim {r['ssq_window_own_sim']:.4g}</small></td>"
+                f"<td>{r['ssq_full']:.4g}<br><small>own sim {r['ssq_full_own_sim']:.4g}</small></td>"
+                f"<td>{r['evaluations']}</td><td>{r['seconds']:.1f}</td></tr>"
+            )
+        rows.append(
+            f"<tr><td><small>grid scan, best in window</small></td><td>{gb['k']:,.1f}</td>"
+            f"<td>{gb['n_inv']:.3f}</td><td>{gb['ssq_window']:.4g}</td><td>{gb['ssq_full']:.4g}</td>"
+            f"<td>225</td><td>–</td></tr>"
+            f"<tr><td><small>psdm start (Kdata sheet)</small></td><td>{f['start_psdm']['k']:,.1f}</td>"
+            f"<td>{f['start_psdm']['n_inv']:.3f}</td><td>{f['start_psdm']['ssq_window']:.4g}</td>"
+            f"<td>–</td><td>–</td><td>–</td></tr>"
+        )
+        scale = 1750.0
+        cv = f["curves"]
+        obs = f["observed"]
+        meta = "effluent / 1750 µg/L (max influent)"
+        if f["until"]:
+            meta += f" · fitted on t ≤ {f['until']:g} d only, all observations shown"
+        charts.append(
+            chart_card(
+                f["label"],
+                meta,
+                cv["grid"],
+                [
+                    ("upstream fit", "up", "--s1", [v / scale for v in cv["upstream"]]),
+                    ("psdm fit", "ps", "--s2", [v / scale for v in cv["psdm"]]),
+                ],
+                ad=(obs["t"], [v / scale for v in obs["c"]]),
+                yhi=1.1,
+                ylabel="C / 1750 µg/L",
+            )
+        )
+    return f"""<h2>Fitting K and 1/n</h2>
+<p>psdm's <code>fit_freundlich</code> (Nelder–Mead over log q_ref and 1/n, started from the K and 1/n in the
+<code>Kdata</code> sheet) against upstream's <code>run_all_smart</code> (a grid walk over a K multiplier and 1/n,
+started from the capacity estimated by upstream's <code>__calculate_capacity</code>, with no <code>k_data</code>
+given, as in normal use), both with nr = 8, nz = 12 on <code>examples/Example_TCE.xlsx</code>, sheet
+<code>data_optimize</code>. For the window case upstream was given only the rows with t ≤ 55 d; psdm was given
+all data with <code>until=55</code>. The two codes minimise different objectives (upstream: daily-interpolated
+effluent up to its estimated breakthrough day; psdm: the observed points, after <code>read_excel</code> fills the
+effluent at influent-only times), so every fitted (K, 1/n) is re-scored the same way: simulated with psdm and
+compared with the effluent rows of the sheet (<em>own sim</em> repeats the score with each code's own
+simulation). SSQ in (µg/L)². <em>Simulations</em> counts calls of upstream <code>run_psdm</code> and psdm
+<code>simulate</code>; the grid scan is 25 q_ref factors (0.1–10×) × 9 values of 1/n (0.2–1.0).</p>
+<div class="tablewrap"><table><thead><tr><th>Method</th><th>K</th><th>1/n</th><th>SSQ in window</th>
+<th>SSQ all data</th><th>simulations</th><th>time, s</th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
+<div class="verdict"><ul>{"".join(verdict)}</ul>
+<p>Criterion: psdm's SSQ should be no worse than upstream's in the fitted window; identical parameters are not
+expected. Both searches can stop at a poor point. In the t ≤ 55 d window the starting K predicts zero effluent at
+every observation, the SSQ surface around it is flat, and psdm's Nelder–Mead does not leave the plateau
+(<code>fit_freundlich</code> in psdm 0.2.0 has no coarse start-point scan). Upstream's
+<code>run_all_smart</code> takes a few steps from its own capacity estimate and stops when no neighbouring grid
+point improves, often at an edge of its 1/n grid. Upstream's other optimiser, <code>run_all</code>, raises
+<code>ValueError</code> in its grid-refinement step under pandas 2.3 (upstream marks it
+<em>TODO: check this still functions</em>), so it is not compared. A good fit to t ≤ 55 d alone does not
+predict the later data; the grid point that fits the window best is far off over all data.</p></div>
+<div class="legend"><span><i style="border-color:var(--s1)"></i>upstream fit</span>
+<span><i class="dash" style="border-color:var(--s2)"></i>psdm fit</span>
+<span><i class="dot"></i>observed effluent</span></div>
+<div class="grid">{"".join(charts)}</div>"""
+
+
+def render(summary, env, repeats, paths=None, fits=None):
     cases = list(summary)
     rows, detail, solver = [], [], []
     worst_up, worst_ad = 0.0, 0.0
@@ -863,6 +1463,9 @@ right-hand side then run as Python-object loops. Built that way, upstream is
 code, and leaves psdm only {rng([f / p for _, f, p in f64_cut])} ahead. The float64 run changes upstream's output
 by at most {pct(f64_dev)} of C0, through a slightly different step sequence.</p>"""
 
+    paths_html = render_paths(paths) if paths else ""
+    fits_html = render_fits(fits) if fits else ""
+
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>PSDM Benchmark</title><style>{CSS}</style></head><body><main>
@@ -913,6 +1516,9 @@ run.</p>
 <p>Effluent concentration as a fraction of C0; the strip under each chart is psdm − upstream (as-is run). Hover a
 chart for values.</p>
 <div class="grid">{"".join(charts)}</div>
+
+{paths_html}
+{fits_html}
 
 <h2>Where the time goes</h2>
 <p>Medians in seconds. <em>read</em>: Excel input (cold call); <em>build</em>: constructing the model objects;
@@ -976,7 +1582,8 @@ but still depend on the BLAS and scipy version.</li>
 <li>Upstream <code>run_psdm_kfit</code> also computes a sum of squares against (empty) effluent data and copies
 DataFrames; that overhead is part of its normal API and is counted. The <em>solve_ivp</em> column isolates the
 integrator for a like-for-like comparison.</li>
-<li>Fitting routines (K/1/n search, ds fitting), capacity and uncertainty tools were not timed. Upstream's fitting
+<li>Fitting is compared once on one data set (above), not timed repeatedly; ds fitting, capacity and
+uncertainty tools are neither timed nor compared here. Upstream's fitting
 loops call <code>run_psdm</code> many times, so the per-run setup cost above would multiply there.</li>
 <li>Agreement with upstream is not agreement with reality; the only external reference here is AdDesignS.</li>
 </ul>
@@ -997,8 +1604,20 @@ def main(argv=None):
     ap.add_argument("--out", type=Path, default=ROOT / "benchmarks" / "report.html")
     ap.add_argument("--json", type=Path, default=ROOT / "benchmarks" / "results.json")
     ap.add_argument("--from-json", type=Path, help="re-render the report from saved results")
+    ap.add_argument("--paths", nargs="*", default=list(PATHS), choices=list(PATHS))
+    ap.add_argument("--fits", nargs="*", default=list(FITS), choices=list(FITS))
     ap.add_argument(
-        "--worker", choices=["upstream", "upstream_f64", "psdm"], help=argparse.SUPPRESS
+        "--worker",
+        choices=[
+            "upstream",
+            "upstream_f64",
+            "psdm",
+            "path_upstream",
+            "path_psdm",
+            "fit_upstream",
+            "fit_psdm",
+        ],
+        help=argparse.SUPPRESS,
     )
     ap.add_argument("--case", help=argparse.SUPPRESS)
     ap.add_argument("--worker-out", type=Path, help=argparse.SUPPRESS)
@@ -1008,6 +1627,10 @@ def main(argv=None):
         warnings.simplefilter("ignore")
         if a.worker == "psdm":
             res = worker_psdm(a.case)
+        elif a.worker.startswith("path_"):
+            res = worker_path(a.worker[5:], a.case, a.upstream)
+        elif a.worker.startswith("fit_"):
+            res = worker_fit(a.worker[4:], a.case, a.upstream)
         else:
             res = worker_upstream(a.case, a.upstream, float_inputs=a.worker == "upstream_f64")
         a.worker_out.write_text(json.dumps(res))
@@ -1020,13 +1643,27 @@ def main(argv=None):
             upstream = a.upstream or clone_upstream(Path(tmp) / "wtm")
             env = environment(upstream)
             print("\n".join(f"{k}: {v}" for k, v in env.items()), flush=True)
+            acc = accuracy_runs(upstream, a.paths, a.fits)
             raw = benchmark(upstream, a.repeats, a.cases)
-        saved = {"environment": env, "repeats": a.repeats, "summary": summarise(raw)}
+        saved = {
+            "environment": env,
+            "repeats": a.repeats,
+            "summary": summarise(raw),
+            "paths": summarise_paths(acc["paths"]),
+            "fits": fit_reference(acc["fits"]),
+        }
         a.json.parent.mkdir(parents=True, exist_ok=True)
         a.json.write_text(json.dumps(saved, indent=1))
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_text(
-        render(saved["summary"], saved["environment"], saved["repeats"]), encoding="utf-8"
+        render(
+            saved["summary"],
+            saved["environment"],
+            saved["repeats"],
+            saved.get("paths", {}),
+            saved.get("fits", {}),
+        ),
+        encoding="utf-8",
     )
     print(f"wrote {a.out}")
 
