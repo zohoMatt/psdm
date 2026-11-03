@@ -9,7 +9,9 @@ All notable changes to this project are documented here. The format follows
 ## [0.4.0] - 2026-11-03
 
 psdm now covers the PSDM of AdDesignS only, and its core follows the AdDesignS source
-(USEPA/Environmental-Technologies-Design-Option-Tool, `VS2019_AdDesignS`).
+(USEPA/Environmental-Technologies-Design-Option-Tool, `VS2019_AdDesignS`). This is the first
+release after 0.2.0: 0.3.0 was never published, and most of what it added is removed again
+here. Upgrading from 0.2.0, read both sections.
 
 ### Removed (breaking)
 
@@ -46,7 +48,15 @@ Everything without an AdDesignS counterpart:
 - `Column.shape_factor` (default 1) multiplies the correlated `kf`, as in AdDesignS.
 - Compound class `"acids"` `(0.65, 0.35)` from AdDesignS `corr_com.txt`.
 
-## [0.3.0] - 2026-11-02
+### Tests
+
+- `tests/test_tce_epa.py` compares `Example_TCE.xlsx` breakthrough curves with time-varying
+  influent against the EPA code: `data_variable` with the `Kdata` values, and `data_optimize`
+  at the K and 1/n where the EPA `run_all_smart` ends (including `1/n = 0.975` and the fit to
+  the first 55 days). Largest difference 0.45 % of the maximum influent concentration.
+- The tortuosity now has its own tests: it changes only `Dp` and `Ds`, as in AdDesignS.
+
+## [0.3.0] - 2026-11-02 (not published)
 
 ### Changed
 
