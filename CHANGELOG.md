@@ -53,7 +53,10 @@ Everything without an AdDesignS counterpart:
 - `tests/test_tce_epa.py` compares `Example_TCE.xlsx` breakthrough curves with time-varying
   influent against the EPA code: `data_variable` with the `Kdata` values, and `data_optimize`
   at the K and 1/n where the EPA `run_all_smart` ends (including `1/n = 0.975` and the fit to
-  the first 55 days). Largest difference 0.45 % of the maximum influent concentration.
+  the first 55 days). Both codes integrate with `rtol=1e-6` there: at the default
+  `rtol=1e-3` each code's own integration error reaches ~0.7 % of C0 and depends on the
+  platform. The largest difference is 0.06 % of the maximum influent concentration
+  (tolerance 0.1 %).
 - The tortuosity now has its own tests: it changes only `Dp` and `Ds`, as in AdDesignS.
 
 ## [0.3.0] - 2026-11-02 (not published)

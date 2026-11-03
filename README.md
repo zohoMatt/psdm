@@ -73,8 +73,9 @@ reproduces the original's results.
   0.57 % of C0 of AdDesignS. The original EPA code stays within 0.62 %.
 - **Test suite.** The tests check psdm against reference curves generated with the EPA code and
   against the AdDesignS output, with a tolerance of 0.5 % of C0. They include six
-  `Example_TCE.xlsx` curves with time-varying influent and measured effluent, two of them at
-  the K and 1/n where the EPA fitter `run_all_smart` ends (largest difference 0.45 % of C0).
+  `Example_TCE.xlsx` curves with time-varying influent and measured effluent, four of them at
+  the K and 1/n where the EPA fitter `run_all_smart` ends. Both codes integrate these with
+  `rtol=1e-6`; the largest difference is 0.06 % of C0.
 - **Where psdm follows AdDesignS instead of the EPA code.** The pore diffusion modulus with a
   tortuosity other than 1, the Houghton water coefficient `a4`, and the exact onset of the
   tortuosity correlation; see the [changelog](CHANGELOG.md) for 0.4.0. None of the cases

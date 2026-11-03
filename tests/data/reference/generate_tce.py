@@ -11,9 +11,15 @@ a single K and 1/n, i.e. one simulation with time-varying influent:
   capacity estimate (organic-free and Rhine water), from the Kdata sheet, and from the
   capacity estimate on the first 55 days only (where the starting K predicts no breakthrough).
   These are the curves the fitter compares with the data; the fit itself is not part of psdm.
+
+The fits run with upstream's default solver tolerances (scipy's ``rtol=1e-3``), as a user
+would get them. The curves are then integrated with ``rtol=RTOL, atol=ATOL``: at the default
+tolerances the integration error of either code on these cases is up to ~0.7 % of the influent
+concentration and depends on the platform, which would hide or fake a model difference.
 """
 
 import contextlib
+import functools
 import io
 import sys
 import types
@@ -32,6 +38,8 @@ pkg.__path__ = [str(up / "psdm")]
 sys.modules["epa_psdm"] = pkg
 import epa_psdm.PSDM as P  # noqa: E402
 
+RTOL, ATOL = 1e-6, 1e-9  # keep in sync with tests/test_tce_epa.py
+default_solve_ivp = P.solve_ivp
 fn = up / "Example_TCE.xlsx"
 chem = P.process_input_data(fn, sheet_name="Properties")
 k_sheet = pd.read_excel(fn, sheet_name="Kdata", index_col=0)
@@ -59,11 +67,15 @@ def curve(sheet, water, k, xn):
     raw, column, comp = load(sheet)
     kd = k_sheet.copy()
     kd.loc["K", comp], kd.loc["1/n", comp] = k, xn
-    with contextlib.redirect_stdout(io.StringIO()):
-        col = P.PSDM(column, chem, raw, water_type=water, k_data=kd, optimize=False)
-        col.test_range = np.array([k])
-        col.xn_range = np.array([xn])
-        md = col.run_psdm_kfit(comp)[-1]
+    P.solve_ivp = functools.partial(default_solve_ivp, rtol=RTOL, atol=ATOL)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            col = P.PSDM(column, chem, raw, water_type=water, k_data=kd, optimize=False)
+            col.test_range = np.array([k])
+            col.xn_range = np.array([xn])
+            md = col.run_psdm_kfit(comp)[-1]
+    finally:
+        P.solve_ivp = default_solve_ivp
     grid = np.linspace(0, float(raw.index.max()), 301)
     return grid, np.interp(grid, md.index.values, md.values[:, 0])
 
