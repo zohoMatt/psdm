@@ -67,11 +67,14 @@ def _expected_groups(column, compound, c0_ug, kf, dp, ds):
     return {"St": st, "Eds": eds, "Edp": edp, "Bi_s": st / eds, "Bi_p": st / edp}
 
 
-@pytest.mark.parametrize("water", ["Organic Free", "Rhine"])
-def test_diagnostics_match_independent_formulas(water, addesigns_column, tce, influent):
-    res = psdm.simulate(addesigns_column, tce, influent, water=water, **KW)
+@pytest.mark.parametrize(
+    ("water", "tortuosity"), [("Organic Free", 1.0), ("Organic Free", 2.0), ("Rhine", 1.0)]
+)
+def test_diagnostics_match_independent_formulas(water, tortuosity, addesigns_column, tce, influent):
+    column = addesigns_column.with_(tortuosity=tortuosity)
+    res = psdm.simulate(column, tce, influent, water=water, **KW)
     mt = res.mass_transfer["TCE"]
-    expected = _expected_groups(addesigns_column, tce, 50_000, mt["kf"], mt["dp"], mt["ds"])
+    expected = _expected_groups(column, tce, 50_000, mt["kf"], mt["dp"], mt["ds"])
     diag = res.diagnostics["TCE"]
     assert list(res.diagnostics.index) == ["St", "Eds", "Edp", "Bi_s", "Bi_p"]
     for key, value in expected.items():
@@ -79,6 +82,19 @@ def test_diagnostics_match_independent_formulas(water, addesigns_column, tce, in
     assert np.isfinite(diag).all() and (diag > 0).all()
     if water != "Organic Free":
         assert diag["Eds"] < 1e-9  # surface diffusion switched off
+
+
+def test_tortuosity_only_enters_through_dp_and_ds(addesigns_column, tce, influent):
+    """AdDesignS: the tortuosity changes Dp = Dl/tau and Ds, nothing else (psdm12.for).
+
+    The EPA code also multiplies the pore diffusion modulus by the tortuosity, so there a
+    column with tau = 2 differs from tau = 1 with the same Dp and Ds.
+    """
+    tau2 = psdm.simulate(addesigns_column.with_(tortuosity=2.0), tce, influent, **KW)
+    mt = tau2.mass_transfer["TCE"]
+    same = psdm.simulate(addesigns_column, tce.with_(dp=mt["dp"], ds=mt["ds"]), influent, **KW)
+    t = np.linspace(0, 174, 59)
+    np.testing.assert_allclose(tau2(t, "TCE"), same(t, "TCE"), rtol=1e-6, atol=1e-9)
 
 
 def test_diagnostics_are_unit_independent(addesigns_column, tce):
